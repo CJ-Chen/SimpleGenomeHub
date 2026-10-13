@@ -109,6 +109,8 @@ public final class SimpleGenomeHubFontManager {
     }
 
     private static void registerOwnedWindowsOnEdt(Window window, HubSession session) {
+        if (window instanceof RootPaneContainer)
+            ((RootPaneContainer) window).getRootPane().putClientProperty("sgh.drawingWindow", session);
         registerRoot(window, session);
         session.guardActionsIn(window);
         for (Window child : window.getOwnedWindows()) registerOwnedWindowsOnEdt(child, session);
@@ -221,7 +223,7 @@ public final class SimpleGenomeHubFontManager {
                 if (belongsToRegisteredRoot(child)) {
                     SwingUtilities.invokeLater(() -> {
                         HubSession owner = HubSession.getExplicitOwner(child);
-                        if (owner != null) owner.guardActionsIn(child);
+                        if (owner != null && isDrawingComponent(child)) owner.guardActionsIn(child);
                         applyScaleToComponentTree(child, currentScalePercent);
                     });
                 }
@@ -262,6 +264,14 @@ public final class SimpleGenomeHubFontManager {
             if (ROOTS.containsKey(cursor)) return true;
         HubSession owner = HubSession.getExplicitOwner(component);
         return owner != null && ROOTS.containsValue(owner);
+    }
+
+    private static boolean isDrawingComponent(Component component) {
+        Window window = component instanceof Window ? (Window) component : SwingUtilities.getWindowAncestor(component);
+        for (; window != null; window = window.getOwner())
+            if (window instanceof RootPaneContainer && ((RootPaneContainer) window).getRootPane()
+                .getClientProperty("sgh.drawingWindow") != null) return true;
+        return false;
     }
 
     private static Timer ensureDragApplyTimer() {

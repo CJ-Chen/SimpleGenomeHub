@@ -155,10 +155,15 @@ public final class HubSession {
             if (button.getClientProperty("sgh.actionSession") != this) {
                 java.awt.event.ActionListener[] listeners = button.getActionListeners();
                 if (listeners.length != 0) {
+                    final long expectedGeneration = getGeneration();
                     for (java.awt.event.ActionListener listener : listeners) button.removeActionListener(listener);
                     button.addActionListener(event -> {
-                        if (!isActive()) return;
-                        try (Task action = beginTask("Drawing control: " + button.getText(), null)) {
+                        final Task action;
+                        synchronized (HubSession.this) {
+                            if (!accepts(expectedGeneration)) return;
+                            action = beginTask("Drawing control: " + button.getText(), null);
+                        }
+                        try (Task running = action) {
                             for (java.awt.event.ActionListener listener : listeners) listener.actionPerformed(event);
                         }
                     });
