@@ -1,5 +1,8 @@
 package simplegenomehub.gui;
 
+import simplegenomehub.util.fileio.GeneSetSupport;
+import simplegenomehub.util.fileio.RegionSetSupport;
+
 import java.io.BufferedReader;
 import java.io.BufferedWriter;
 import java.io.File;
@@ -10,7 +13,6 @@ import java.io.InputStreamReader;
 import java.io.OutputStreamWriter;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
-import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
@@ -18,9 +20,9 @@ import java.util.Set;
 
 final class GeneSetFileSupport {
 
-    static final String REGION_SET_HEADER = "#####Region Set:";
-    static final String GENE_SET_SUFFIX = ".gene.txt";
-    static final String REGION_SET_SUFFIX = ".region.txt";
+    static final String REGION_SET_HEADER = RegionSetSupport.REGION_SET_HEADER;
+    static final String GENE_SET_SUFFIX = GeneSetSupport.GENE_SET_SUFFIX;
+    static final String REGION_SET_SUFFIX = RegionSetSupport.REGION_SET_SUFFIX;
 
     enum SetKind {
         GENE,
@@ -30,16 +32,22 @@ final class GeneSetFileSupport {
     private GeneSetFileSupport() {
     }
 
+    /**
+     * IDs only. Comment lines are skipped and only the first column is used, so the old
+     * bare-id files and the new id+chromosome+start+end rows both parse correctly.
+     */
     static List<String> parseGeneIds(String rawText) {
-        String[] lines = normalizeLineEndings(rawText).split("\n");
-        LinkedHashSet<String> uniqueGeneIds = new LinkedHashSet<>();
-        for (String line : lines) {
-            String trimmed = line.trim();
-            if (!trimmed.isEmpty()) {
-                uniqueGeneIds.add(trimmed);
-            }
-        }
+        LinkedHashSet<String> uniqueGeneIds = new LinkedHashSet<>(GeneSetSupport.parseIds(rawText));
         return new ArrayList<>(uniqueGeneIds);
+    }
+
+    /** Writes id + chromosome + start + end rows (1-based inclusive) whenever known. */
+    static void writeGeneSetEntries(File outputFile, List<GeneSetSupport.Entry> entries) throws IOException {
+        GeneSetSupport.writeEntries(outputFile, entries);
+    }
+
+    static List<GeneSetSupport.Entry> readGeneSetEntries(File geneSetFile) throws IOException {
+        return GeneSetSupport.readEntries(geneSetFile);
     }
 
     static String formatGeneIds(List<String> geneIds) {
@@ -58,65 +66,30 @@ final class GeneSetFileSupport {
     }
 
     static List<RegionEntry> parseRegionEntries(String rawText) {
-        String[] lines = normalizeLineEndings(rawText).split("\n");
-        List<RegionEntry> entries = new ArrayList<>();
-        List<String> errors = new ArrayList<>();
-
-        for (int i = 0; i < lines.length; i++) {
-            String trimmed = lines[i].trim();
-            if (trimmed.isEmpty() || REGION_SET_HEADER.equals(trimmed)) {
-                continue;
-            }
-
-            String[] columns = trimmed.split("\\s+");
-            int lineNumber = i + 1;
-            if (columns.length != 3) {
-                errors.add("Line " + lineNumber + ": expected 'ChrName StartPos EndPos'");
-                continue;
-            }
-
-            long startPos;
-            long endPos;
-            try {
-                startPos = Long.parseLong(columns[1]);
-                endPos = Long.parseLong(columns[2]);
-            } catch (NumberFormatException e) {
-                errors.add("Line " + lineNumber + ": StartPos and EndPos must be integers");
-                continue;
-            }
-
-            if (startPos < 1 || endPos < 1) {
-                errors.add("Line " + lineNumber + ": StartPos and EndPos must be greater than 0");
-                continue;
-            }
-
-            if (startPos > endPos) {
-                errors.add("Line " + lineNumber + ": StartPos cannot be greater than EndPos");
-                continue;
-            }
-
-            entries.add(new RegionEntry(columns[0], startPos, endPos, lineNumber));
-        }
-
-        if (entries.isEmpty()) {
-            errors.add("No valid region entries were provided.");
-        }
-
-        if (!errors.isEmpty()) {
-            throw new IllegalArgumentException(String.join("\n", errors));
+        List<RegionSetSupport.Entry> parsedEntries = RegionSetSupport.parse(rawText);
+        List<RegionEntry> entries = new ArrayList<>(parsedEntries.size());
+        for (RegionSetSupport.Entry parsedEntry : parsedEntries) {
+            entries.add(new RegionEntry(
+                parsedEntry.getChromosomeName(),
+                parsedEntry.getStartPos(),
+                parsedEntry.getEndPos(),
+                parsedEntry.getLineNumber()
+            ));
         }
         return entries;
     }
 
     static String formatRegionSetContent(List<RegionEntry> entries) {
-        StringBuilder builder = new StringBuilder(REGION_SET_HEADER);
+        List<RegionSetSupport.Entry> convertedEntries = new ArrayList<>(entries.size());
         for (RegionEntry entry : entries) {
-            builder.append('\n')
-                .append(entry.getChromosomeName()).append(' ')
-                .append(entry.getStartPos()).append(' ')
-                .append(entry.getEndPos());
+            convertedEntries.add(new RegionSetSupport.Entry(
+                entry.getChromosomeName(),
+                entry.getStartPos(),
+                entry.getEndPos(),
+                entry.getLineNumber()
+            ));
         }
-        return builder.toString();
+        return RegionSetSupport.format(convertedEntries);
     }
 
     static String readGeneSetContent(File geneSetFile) throws IOException {
@@ -243,59 +216,7 @@ final class GeneSetFileSupport {
     }
 
     static Map<String, Long> loadChromosomeSizesFromStats(File statsFile) throws IOException {
-        Map<String, String> chromosomeNamesByPrefix = new LinkedHashMap<>();
-        Map<String, Long> chromosomeSizesByPrefix = new LinkedHashMap<>();
-        Map<String, Long> chromosomeSizes = new LinkedHashMap<>();
-        boolean inChromosomeBlock = false;
-
-        try (BufferedReader reader = new BufferedReader(
-            new InputStreamReader(new FileInputStream(statsFile), StandardCharsets.UTF_8))) {
-            String line;
-            while ((line = reader.readLine()) != null) {
-                String trimmed = line.trim();
-                if (!inChromosomeBlock) {
-                    if ("#####################chromosome stat".equals(trimmed)) {
-                        inChromosomeBlock = true;
-                    }
-                    continue;
-                }
-
-                if (trimmed.startsWith("#####################")) {
-                    break;
-                }
-                if (trimmed.isEmpty()) {
-                    continue;
-                }
-
-                int separatorIndex = trimmed.indexOf('=');
-                if (separatorIndex <= 0) {
-                    continue;
-                }
-
-                String key = trimmed.substring(0, separatorIndex).trim();
-                String value = trimmed.substring(separatorIndex + 1).trim();
-                if (key.endsWith(".name")) {
-                    chromosomeNamesByPrefix.put(key.substring(0, key.length() - 5), value);
-                } else if (key.endsWith(".size")) {
-                    try {
-                        chromosomeSizesByPrefix.put(
-                            key.substring(0, key.length() - 5),
-                            Long.parseLong(value.replace(",", ""))
-                        );
-                    } catch (NumberFormatException ignored) {
-                        // Ignore malformed size lines and let validation fail later if needed.
-                    }
-                }
-            }
-        }
-
-        for (Map.Entry<String, String> entry : chromosomeNamesByPrefix.entrySet()) {
-            Long chromosomeSize = chromosomeSizesByPrefix.get(entry.getKey());
-            if (chromosomeSize != null) {
-                chromosomeSizes.put(entry.getValue(), chromosomeSize);
-            }
-        }
-        return chromosomeSizes;
+        return RegionSetSupport.loadChromosomeSizesFromStats(statsFile);
     }
 
     static List<String> validateRegionEntries(List<RegionEntry> entries, Map<String, Long> chromosomeSizes) {

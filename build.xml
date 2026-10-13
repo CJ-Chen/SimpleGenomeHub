@@ -20,6 +20,7 @@
     <property name="release.lib.dir" location="${release.dir}/lib"/>
     <property name="release.tbtools.lib.dir" location="${release.dir}/tbtools/lib"/>
     <property name="release.runtime.dir" location="${release.dir}/runtime"/>
+    <property name="assets.dir" location="assets"/>
     <property name="windows.toolchain.java.home" location="toolchain/windows-x64"/>
     <property name="mac.toolchain.java.home" location="toolchain/macos-x64"/>
     <property name="linux.toolchain.java.home" location="toolchain/linux-x64"/>
@@ -30,6 +31,9 @@
     <property name="app.version" value="1.0"/>
     <property name="app.vendor" value="SimpleGenomeHub Team"/>
     <property name="app.description" value="Genome and annotation management desktop application"/>
+    <property name="windows.icon.source.file" location="assets/icons/windows/SimpleGenomeHub.ico"/>
+    <property name="macos.icon.source.file" location="assets/icons/macos/SimpleGenomeHub.icns"/>
+    <property name="macos.bundle.icon.name" value="SimpleGenomeHub.icns"/>
     <property name="windows.installer.name" value="SimpleGenomeHub-windows-x64-setup"/>
     <property name="windows.installer.script" location="${installer.work.dir}/SimpleGenomeHub-windows-x64.iss"/>
     <property name="macos.app.dir" location="${installer.work.dir}/SimpleGenomeHub.app"/>
@@ -115,6 +119,8 @@
         <delete dir="${release.dir}/tbtools" failonerror="false"/>
         <delete file="${release.tbtools.lib.dir}/TBtools_JRE1.6.jar" failonerror="false"/>
         <delete file="${release.dir}/run.bat" failonerror="false"/>
+        <delete file="${release.dir}/run-debug.bat" failonerror="false"/>
+        <delete file="${release.dir}/launch.vbs" failonerror="false"/>
         <delete file="${release.dir}/run.ps1" failonerror="false"/>
         <delete file="${release.dir}/run.sh" failonerror="false"/>
         <delete file="${release.dir}/README.txt" failonerror="false"/>
@@ -131,7 +137,7 @@
         <fail unless="compiler.available"
               message="Java compiler not found. Provide toolchain/&lt;platform&gt;/ or set JAVA_HOME to a JDK 11+ installation."/>
     </target>
-
+    
     <!-- Clean build artifacts -->
     <target name="clean">
         <delete dir="${build.dir}"/>
@@ -211,6 +217,10 @@
         <available file="${mac.toolchain.java.home}/bin/java"/>
     </condition>
 
+    <condition property="mac.icon.available">
+        <available file="${macos.icon.source.file}"/>
+    </condition>
+
     <target name="bundle-runtime" depends="prepare-release,jar" if="bundle.runtime.available">
         <mkdir dir="${release.runtime.dir}"/>
         <copy todir="${release.runtime.dir}/bin">
@@ -248,11 +258,69 @@
         <copy todir="${release.dir}/bin/tools" failonerror="false">
             <fileset dir="${tools.source.dir}" erroronmissingdir="false"/>
         </copy>
+        <copy todir="${release.dir}/assets" failonerror="false">
+            <fileset dir="${assets.dir}" erroronmissingdir="false"/>
+        </copy>
 
         <echo message="Using external tool payload from: ${tools.source.dir}"/>
         
-        <!-- Create run script for Windows -->
+        <!-- Create hidden and diagnostic launchers for Windows -->
         <echo file="${release.dir}/run.bat"><![CDATA[@echo off
+start "" wscript.exe "%~dp0launch.vbs"
+exit /b 0
+]]></echo>
+
+        <echo file="${release.dir}/launch.vbs"><![CDATA[Option Explicit
+Dim fso, shell, processEnvironment, appHome, appJar, javaExe, javaHome
+Dim toolsDir, classPath, command, result
+
+Set fso = CreateObject("Scripting.FileSystemObject")
+Set shell = CreateObject("WScript.Shell")
+Set processEnvironment = shell.Environment("Process")
+appHome = fso.GetParentFolderName(WScript.ScriptFullName)
+appJar = fso.BuildPath(appHome, "app\SimpleGenomeHub.jar")
+
+If Not fso.FileExists(appJar) Then
+    MsgBox "Missing application jar:" & vbCrLf & appJar, vbCritical, "SimpleGenomeHub"
+    WScript.Quit 1
+End If
+
+javaExe = fso.BuildPath(appHome, "runtime\bin\javaw.exe")
+If Not fso.FileExists(javaExe) Then
+    javaHome = processEnvironment("JAVA_HOME")
+    If Len(javaHome) > 0 And fso.FileExists(fso.BuildPath(javaHome, "bin\javaw.exe")) Then
+        javaExe = fso.BuildPath(javaHome, "bin\javaw.exe")
+    Else
+        javaExe = "javaw.exe"
+    End If
+End If
+
+toolsDir = fso.BuildPath(appHome, "bin\tools\windows-x64")
+If Not fso.FolderExists(toolsDir) Then toolsDir = fso.BuildPath(appHome, "bin\tools")
+If fso.FolderExists(toolsDir) Then
+    processEnvironment("PATH") = toolsDir & ";" & processEnvironment("PATH")
+End If
+
+shell.CurrentDirectory = appHome
+classPath = "app\SimpleGenomeHub.jar;lib/*;tbtools/lib/*"
+command = Quote(javaExe) & " --add-modules ALL-SYSTEM " & Quote("-Dsimplegenomehub.app.home=" & appHome) _
+    & " -cp " & Quote(classPath) & " simplegenomehub.gui.SimpleGenomeHubMainPanel"
+
+On Error Resume Next
+result = shell.Run(command, 0, False)
+If Err.Number <> 0 Then
+    MsgBox "SimpleGenomeHub could not be started." & vbCrLf & vbCrLf _
+        & Err.Description, vbCritical, "SimpleGenomeHub"
+    WScript.Quit 1
+End If
+On Error GoTo 0
+
+Function Quote(value)
+    Quote = Chr(34) & value & Chr(34)
+End Function
+]]></echo>
+
+        <echo file="${release.dir}/run-debug.bat"><![CDATA[@echo off
 setlocal
 set "SCRIPT_DIR=%~dp0"
 pushd "%SCRIPT_DIR%" >nul || (
@@ -272,32 +340,20 @@ if not defined JAVA_EXE set "JAVA_EXE=java"
 
 if not exist "%APP_JAR%" (
     echo Missing application jar: "%APP_JAR%"
-    echo Current application directory: "%APP_HOME%"
     pause
     exit /b 1
 )
 
 if exist "%TOOLS_DIR%" set "PATH=%TOOLS_DIR%;%PATH%"
 
-"%JAVA_EXE%" "-Dsimplegenomehub.app.home=%APP_HOME%" -cp "app\SimpleGenomeHub.jar;lib/*;tbtools/lib/*" simplegenomehub.gui.SimpleGenomeHubMainPanel
+"%JAVA_EXE%" --add-modules ALL-SYSTEM "-Dsimplegenomehub.app.home=%APP_HOME%" "-Dsimplegenomehub.debug.console=true" -cp "app\SimpleGenomeHub.jar;lib/*;tbtools/lib/*" simplegenomehub.gui.SimpleGenomeHubMainPanel
 set "EXIT_CODE=%ERRORLEVEL%"
 popd >nul
 if not "%EXIT_CODE%"=="0" (
     echo.
     echo SimpleGenomeHub exited with code %EXIT_CODE%.
-    echo App home: "%APP_HOME%"
     echo Java executable: "%JAVA_EXE%"
-    if exist "%BUNDLED_JAVA%" (
-        echo Bundled runtime path: "%BUNDLED_JAVA%"
-    ) else (
-        echo Bundled runtime path not found: "%BUNDLED_JAVA%"
-    )
-    if exist "%TOOLS_DIR%" (
-        echo Tools path: "%TOOLS_DIR%"
-    ) else (
-        echo Tools path not found: "%TOOLS_DIR%"
-    )
-    echo If the package path contains unsupported characters, move it to a simple ASCII path and try again.
+    echo Tools path: "%TOOLS_DIR%"
     pause
 )
 exit /b %EXIT_CODE%
@@ -325,7 +381,7 @@ try {
     if (Test-Path $toolsDir) {
         $env:Path = $toolsDir + ";" + $env:Path
     }
-    & $javaExe "-Dsimplegenomehub.app.home=$distDir" -cp "app\SimpleGenomeHub.jar;lib/*;tbtools/lib/*" simplegenomehub.gui.SimpleGenomeHubMainPanel
+    & $javaExe --add-modules ALL-SYSTEM "-Dsimplegenomehub.app.home=$distDir" "-Dsimplegenomehub.debug.console=true" -cp "app\SimpleGenomeHub.jar;lib/*;tbtools/lib/*" simplegenomehub.gui.SimpleGenomeHubMainPanel
     exit $LASTEXITCODE
 }
 finally {
@@ -397,7 +453,7 @@ fi
 if [ -n "$TOOLS_DIR" ] && [ -d "$TOOLS_DIR" ]; then
     export PATH="$TOOLS_DIR:$PATH"
 fi
-exec "$JAVA_EXE" "-Dsimplegenomehub.app.home=$SCRIPT_DIR" -cp "app/SimpleGenomeHub.jar:lib/*:tbtools/lib/*" simplegenomehub.gui.SimpleGenomeHubMainPanel
+exec "$JAVA_EXE" --add-modules ALL-SYSTEM "-Dsimplegenomehub.app.home=$SCRIPT_DIR" -cp "app/SimpleGenomeHub.jar:lib/*:tbtools/lib/*" simplegenomehub.gui.SimpleGenomeHubMainPanel
 ]]></echo>
         <chmod file="${release.dir}/run.sh" perm="755"/>
 
@@ -409,7 +465,9 @@ Contents
 - tbtools/lib/TBtools_JRE1.6.jar
 - bin/tools/ (platform-scoped external executables)
 - runtime/ (bundled Java 11 runtime when available)
-- run.bat / run.ps1 / run.sh launch scripts
+- run.bat / launch.vbs: normal Windows launcher without a console
+- run-debug.bat / run.ps1: Windows diagnostic launchers with a console
+- run.sh: macOS/Linux launcher
 
 Requirements
 - No system Java is required if runtime/ is present
@@ -519,8 +577,66 @@ These are packaged as runtime dependencies, not merged source code.
         <copy todir="${windows.package.dir}/bin/tools/windows-x64" failonerror="false">
             <fileset dir="${tools.source.dir}/windows-x64" erroronmissingdir="false"/>
         </copy>
+        <copy todir="${windows.package.dir}/assets" failonerror="false">
+            <fileset dir="${assets.dir}" erroronmissingdir="false"/>
+        </copy>
 
         <echo file="${windows.package.dir}/run.bat"><![CDATA[@echo off
+start "" wscript.exe "%~dp0launch.vbs"
+exit /b 0
+]]></echo>
+
+        <echo file="${windows.package.dir}/launch.vbs"><![CDATA[Option Explicit
+Dim fso, shell, processEnvironment, appHome, appJar, javaExe, javaHome
+Dim toolsDir, classPath, command, result
+
+Set fso = CreateObject("Scripting.FileSystemObject")
+Set shell = CreateObject("WScript.Shell")
+Set processEnvironment = shell.Environment("Process")
+appHome = fso.GetParentFolderName(WScript.ScriptFullName)
+appJar = fso.BuildPath(appHome, "app\SimpleGenomeHub.jar")
+
+If Not fso.FileExists(appJar) Then
+    MsgBox "Missing application jar:" & vbCrLf & appJar, vbCritical, "SimpleGenomeHub"
+    WScript.Quit 1
+End If
+
+javaExe = fso.BuildPath(appHome, "runtime\bin\javaw.exe")
+If Not fso.FileExists(javaExe) Then
+    javaHome = processEnvironment("JAVA_HOME")
+    If Len(javaHome) > 0 And fso.FileExists(fso.BuildPath(javaHome, "bin\javaw.exe")) Then
+        javaExe = fso.BuildPath(javaHome, "bin\javaw.exe")
+    Else
+        javaExe = "javaw.exe"
+    End If
+End If
+
+toolsDir = fso.BuildPath(appHome, "bin\tools\windows-x64")
+If Not fso.FolderExists(toolsDir) Then toolsDir = fso.BuildPath(appHome, "bin\tools")
+If fso.FolderExists(toolsDir) Then
+    processEnvironment("PATH") = toolsDir & ";" & processEnvironment("PATH")
+End If
+
+shell.CurrentDirectory = appHome
+classPath = "app\SimpleGenomeHub.jar;lib/*;tbtools/lib/*"
+command = Quote(javaExe) & " --add-modules ALL-SYSTEM " & Quote("-Dsimplegenomehub.app.home=" & appHome) _
+    & " -cp " & Quote(classPath) & " simplegenomehub.gui.SimpleGenomeHubMainPanel"
+
+On Error Resume Next
+result = shell.Run(command, 0, False)
+If Err.Number <> 0 Then
+    MsgBox "SimpleGenomeHub could not be started." & vbCrLf & vbCrLf _
+        & Err.Description, vbCritical, "SimpleGenomeHub"
+    WScript.Quit 1
+End If
+On Error GoTo 0
+
+Function Quote(value)
+    Quote = Chr(34) & value & Chr(34)
+End Function
+]]></echo>
+
+        <echo file="${windows.package.dir}/run-debug.bat"><![CDATA[@echo off
 setlocal
 set "SCRIPT_DIR=%~dp0"
 pushd "%SCRIPT_DIR%" >nul || (
@@ -545,7 +661,7 @@ if not exist "%APP_JAR%" (
 
 if exist "%TOOLS_DIR%" set "PATH=%TOOLS_DIR%;%PATH%"
 
-"%JAVA_EXE%" "-Dsimplegenomehub.app.home=%APP_HOME%" -cp "app\SimpleGenomeHub.jar;lib/*;tbtools/lib/*" simplegenomehub.gui.SimpleGenomeHubMainPanel
+"%JAVA_EXE%" --add-modules ALL-SYSTEM "-Dsimplegenomehub.app.home=%APP_HOME%" "-Dsimplegenomehub.debug.console=true" -cp "app\SimpleGenomeHub.jar;lib/*;tbtools/lib/*" simplegenomehub.gui.SimpleGenomeHubMainPanel
 set "EXIT_CODE=%ERRORLEVEL%"
 popd >nul
 if not "%EXIT_CODE%"=="0" (
@@ -576,7 +692,7 @@ try {
     if (Test-Path $toolsDir) {
         $env:Path = $toolsDir + ";" + $env:Path
     }
-    & $javaExe "-Dsimplegenomehub.app.home=$appHome" -cp "app\SimpleGenomeHub.jar;lib/*;tbtools/lib/*" simplegenomehub.gui.SimpleGenomeHubMainPanel
+    & $javaExe --add-modules ALL-SYSTEM "-Dsimplegenomehub.app.home=$appHome" "-Dsimplegenomehub.debug.console=true" -cp "app\SimpleGenomeHub.jar;lib/*;tbtools/lib/*" simplegenomehub.gui.SimpleGenomeHubMainPanel
     exit $LASTEXITCODE
 }
 finally {
@@ -593,12 +709,13 @@ finally {
 - `tbtools/lib/TBtools_JRE1.6.jar`: required TBtools dependency jar
 - `bin/tools/windows-x64/`: bundled Windows external tools
 - `runtime/`: bundled Windows Java runtime when present
-- `run.bat` and `run.ps1`: launchers
+- `run.bat` and `launch.vbs`: normal launcher without a console
+- `run-debug.bat` and `run.ps1`: diagnostic launchers with a console
 
 ## How To Run
 
 - Double-click `run.bat`
-- Or run `.\run.ps1` in PowerShell
+- For diagnostics, run `run-debug.bat` or `.\run.ps1`
 
 ## Runtime Notes
 
@@ -659,6 +776,9 @@ finally {
         <copy todir="${macos.package.dir}/bin/tools/macos-x64" failonerror="false">
             <fileset dir="${tools.source.dir}/macos-x64" erroronmissingdir="false"/>
         </copy>
+        <copy todir="${macos.package.dir}/assets" failonerror="false">
+            <fileset dir="${assets.dir}" erroronmissingdir="false"/>
+        </copy>
         <chmod dir="${macos.package.dir}/bin/tools/macos-x64" includes="**/*" perm="755"/>
 
         <echo file="${macos.package.dir}/run.sh"><![CDATA[#!/bin/bash
@@ -679,7 +799,7 @@ else
     JAVA_EXE="java"
 fi
 
-exec "$JAVA_EXE" "-Dsimplegenomehub.app.home=$SCRIPT_DIR" -cp "app/SimpleGenomeHub.jar:lib/*:tbtools/lib/*" simplegenomehub.gui.SimpleGenomeHubMainPanel
+exec "$JAVA_EXE" --add-modules ALL-SYSTEM "-Dsimplegenomehub.app.home=$SCRIPT_DIR" -cp "app/SimpleGenomeHub.jar:lib/*:tbtools/lib/*" simplegenomehub.gui.SimpleGenomeHubMainPanel
 ]]></echo>
 
         <echo file="${macos.package.dir}/run.command"><![CDATA[#!/bin/bash
@@ -697,12 +817,13 @@ exec "$SCRIPT_DIR/run.sh"
 - `tbtools/lib/TBtools_JRE1.6.jar`: required TBtools dependency jar
 - `bin/tools/macos-x64/`: bundled macOS Intel external tools
 - `runtime/`: bundled macOS Java runtime when present
-- `run.command` and `run.sh`: launchers
+- `run.command`: diagnostic launcher with a visible Terminal window
+- `run.sh`: launcher used by the packaged macOS application
 
 ## How To Run
 
-- In Terminal: `bash run.command`
-- Or make the launcher executable and double-click `run.command`
+- The installed `.app` starts without opening Terminal
+- For diagnostics, double-click `run.command` or run `bash run.command`
 
 ## Runtime Notes
 
@@ -766,12 +887,24 @@ exec "$SCRIPT_DIR/run.sh"
         <echo file="${windows.installer.script}"><![CDATA[#define AppName "SimpleGenomeHub"
 #define AppVersion "]]>${app.version}<![CDATA["
 #define AppPublisher "]]>${app.vendor}<![CDATA["
+#define AppDescription "]]>${app.description}<![CDATA["
+#define AppIconSource "]]>${windows.icon.source.file}<![CDATA["
+#define InstalledAppIcon "{app}\assets\icons\windows\SimpleGenomeHub.ico"
+
+#ifexist "]]>${windows.icon.source.file}<![CDATA["
+#define HasAppIcon
+#endif
 
 [Setup]
 AppId={{8E2F1C47-B9D8-4704-9B74-63E5F55C6045}
 AppName={#AppName}
 AppVersion={#AppVersion}
 AppPublisher={#AppPublisher}
+AppComments={#AppDescription}
+#ifdef HasAppIcon
+SetupIconFile={#AppIconSource}
+UninstallDisplayIcon={#InstalledAppIcon}
+#endif
 DefaultDirName={autopf}\SimpleGenomeHub
 DefaultGroupName=SimpleGenomeHub
 DisableProgramGroupPage=yes
@@ -790,12 +923,19 @@ Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription:
 Source: "]]>${windows.package.dir}<![CDATA[\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
-Name: "{autoprograms}\SimpleGenomeHub"; Filename: "{app}\run.bat"; WorkingDir: "{app}"; Comment: "Launch SimpleGenomeHub"
+#ifdef HasAppIcon
+Name: "{autoprograms}\SimpleGenomeHub"; Filename: "{sys}\wscript.exe"; Parameters: """{app}\launch.vbs"""; WorkingDir: "{app}"; IconFilename: "{#InstalledAppIcon}"; Comment: "Launch SimpleGenomeHub"
+Name: "{autoprograms}\Uninstall SimpleGenomeHub"; Filename: "{uninstallexe}"; IconFilename: "{#InstalledAppIcon}"; Comment: "Uninstall SimpleGenomeHub"
+Name: "{autodesktop}\SimpleGenomeHub"; Filename: "{sys}\wscript.exe"; Parameters: """{app}\launch.vbs"""; WorkingDir: "{app}"; IconFilename: "{#InstalledAppIcon}"; Tasks: desktopicon; Comment: "Launch SimpleGenomeHub"
+#else
+Name: "{autoprograms}\SimpleGenomeHub"; Filename: "{sys}\wscript.exe"; Parameters: """{app}\launch.vbs"""; WorkingDir: "{app}"; Comment: "Launch SimpleGenomeHub"
 Name: "{autoprograms}\Uninstall SimpleGenomeHub"; Filename: "{uninstallexe}"; Comment: "Uninstall SimpleGenomeHub"
-Name: "{autodesktop}\SimpleGenomeHub"; Filename: "{app}\run.bat"; WorkingDir: "{app}"; Tasks: desktopicon; Comment: "Launch SimpleGenomeHub"
+Name: "{autodesktop}\SimpleGenomeHub"; Filename: "{sys}\wscript.exe"; Parameters: """{app}\launch.vbs"""; WorkingDir: "{app}"; Tasks: desktopicon; Comment: "Launch SimpleGenomeHub"
+#endif
+Name: "{autoprograms}\SimpleGenomeHub (Debug Console)"; Filename: "{app}\run-debug.bat"; WorkingDir: "{app}"; Comment: "Launch SimpleGenomeHub with a diagnostic console"
 
 [Run]
-Filename: "{app}\run.bat"; Description: "Launch SimpleGenomeHub"; Flags: nowait postinstall skipifsilent
+Filename: "{sys}\wscript.exe"; Parameters: """{app}\launch.vbs"""; WorkingDir: "{app}"; Description: "Launch SimpleGenomeHub"; Flags: nowait postinstall skipifsilent runhidden
 ]]></echo>
         <exec executable="iscc" failonerror="true">
             <arg path="${windows.installer.script}"/>
@@ -810,6 +950,9 @@ Filename: "{app}\run.bat"; Description: "Launch SimpleGenomeHub"; Flags: nowait 
         <copy todir="${macos.app.dir}/Contents/Resources/SimpleGenomeHub">
             <fileset dir="${macos.package.dir}"/>
         </copy>
+        <copy file="${macos.icon.source.file}"
+              tofile="${macos.app.dir}/Contents/Resources/${macos.bundle.icon.name}"
+              failonerror="false"/>
         <echo file="${macos.app.dir}/Contents/Info.plist"><![CDATA[<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "https://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -824,6 +967,8 @@ Filename: "{app}\run.bat"; Description: "Launch SimpleGenomeHub"; Flags: nowait 
     <string>org.simplegenomehub.SimpleGenomeHub</string>
     <key>CFBundleInfoDictionaryVersion</key>
     <string>6.0</string>
+    <key>CFBundleIconFile</key>
+    <string>]]>${macos.bundle.icon.name}<![CDATA[</string>
     <key>CFBundleName</key>
     <string>SimpleGenomeHub</string>
     <key>CFBundlePackageType</key>
@@ -843,7 +988,10 @@ Filename: "{app}\run.bat"; Description: "Launch SimpleGenomeHub"; Flags: nowait 
 set -euo pipefail
 APP_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 APP_HOME="$APP_DIR/Resources/SimpleGenomeHub"
-exec "$APP_HOME/run.sh"
+if ! "$APP_HOME/run.sh"; then
+    /usr/bin/osascript -e 'display alert "SimpleGenomeHub could not be started" message "Open the SimpleGenomeHub runtime log for details." as critical' 2>/dev/null || true
+    exit 1
+fi
 ]]></echo>
         <chmod file="${macos.app.dir}/Contents/MacOS/SimpleGenomeHub" perm="755"/>
         <chmod file="${macos.app.dir}/Contents/Resources/SimpleGenomeHub/run.sh" perm="755"/>

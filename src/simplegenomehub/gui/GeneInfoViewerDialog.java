@@ -8,18 +8,14 @@ import biocjava.bioDoer.MEME.DrawMotifPattern.DrawGeneStructureFromGXFfile;
 import jigplot.engine.JIGBasePanel;
 import jigplot.engine.JIGSubPanel;
 import simplegenomehub.blast.BlastConfig;
+import simplegenomehub.genomebrowser.GenomeBrowserFrame;
 import simplegenomehub.model.*;
-import simplegenomehub.util.fileio.CachedSequenceLookup;
-import simplegenomehub.gui.components.EnhancedInteractiveTable;
+import simplegenomehub.util.fileio.GeneSetSupport;
 
 import javax.swing.*;
-import javax.swing.border.TitledBorder;
 import javax.swing.table.DefaultTableModel;
-import javax.swing.table.TableColumn;
 import javax.swing.table.TableRowSorter;
 import java.awt.*;
-import java.awt.event.ActionEvent;
-import java.awt.event.ActionListener;
 import java.awt.event.WindowAdapter;
 import java.awt.event.WindowEvent;
 import java.awt.geom.AffineTransform;
@@ -72,6 +68,7 @@ public class GeneInfoViewerDialog extends JDialog {
     private ExpressionVisualizationPanel expressionPanel;
     
     // Control buttons
+    private JButton viewInGenomeButton;
     private JButton geneStructureAdvancedButton;
     private JButton exportButton;
     private JButton closeButton;
@@ -160,6 +157,10 @@ public class GeneInfoViewerDialog extends JDialog {
         setTabsEnabled(false);
         
         // Control buttons
+        viewInGenomeButton = new JButton("View in Genome");
+        viewInGenomeButton.setToolTipText("Open the genome browser at the position of the current gene");
+        viewInGenomeButton.setEnabled(false);
+
         geneStructureAdvancedButton = new JButton("Gene Structure View (Advanced)");
         geneStructureAdvancedButton.setToolTipText("Open TBtools Gene Structure View (Advanced) for the current gene");
         geneStructureAdvancedButton.setEnabled(false);
@@ -245,6 +246,8 @@ public class GeneInfoViewerDialog extends JDialog {
         JPanel panel = new JPanel(new FlowLayout(FlowLayout.RIGHT));
         panel.setBorder(BorderFactory.createEtchedBorder());
         
+        panel.add(viewInGenomeButton);
+        panel.add(Box.createHorizontalStrut(10));
         panel.add(geneStructureAdvancedButton);
         panel.add(Box.createHorizontalStrut(10));
         panel.add(exportButton);
@@ -280,6 +283,7 @@ public class GeneInfoViewerDialog extends JDialog {
         // Export button
         exportButton.addActionListener(e -> exportAllData());
 
+        viewInGenomeButton.addActionListener(e -> openCurrentGeneInGenomeBrowser());
         geneStructureAdvancedButton.addActionListener(e -> openGeneStructureAdvancedView());
         
         // Close button
@@ -295,6 +299,20 @@ public class GeneInfoViewerDialog extends JDialog {
             @Override
             public void windowClosing(WindowEvent e) {
                 closeDialog();
+            }
+        });
+    }
+
+    void searchForGeneId(String geneId) {
+        if (geneId == null || geneId.trim().isEmpty()) {
+            return;
+        }
+
+        geneIdField.setText(geneId.trim());
+        geneIdField.setCaretPosition(0);
+        SwingUtilities.invokeLater(() -> {
+            if (isDisplayable()) {
+                performGeneSearch();
             }
         });
     }
@@ -318,6 +336,21 @@ public class GeneInfoViewerDialog extends JDialog {
 
         updatePlaceholderForSpecies(); // Update placeholder for initial species
         updateSearchStatus();
+    }
+
+    /**
+     * Opens the dialog on one genome unit and one gene. Used when another window hands a gene
+     * over (the genome browser's "Open Gene Info"), so the search starts without extra typing.
+     */
+    public void showGene(SpeciesInfo species, String geneId) {
+        if (species != null) {
+            setCurrentSpecies(species);
+        }
+        if (currentSpecies == null || geneId == null || geneId.trim().isEmpty()) {
+            return;
+        }
+        geneIdField.setText(geneId.trim());
+        performGeneSearch();
     }
 
     /**
@@ -417,6 +450,7 @@ public class GeneInfoViewerDialog extends JDialog {
         
         // Keep the UI interactive while annotations continue loading.
         setTabsEnabled(true);
+        viewInGenomeButton.setEnabled(true);
         geneStructureAdvancedButton.setEnabled(true);
 
         if (result.hasSequenceData() || result.hasExpressionData()) {
@@ -480,7 +514,8 @@ public class GeneInfoViewerDialog extends JDialog {
         result.setAnnotations(annotations);
         annotationPanel.loadGeneData(result);
 
-        boolean hasAnyData = result.hasSequenceData() || result.hasExpressionData() || !annotations.isEmpty();
+        boolean hasAnyData = result.isFound() || !annotations.isEmpty();
+        result.setFound(hasAnyData);
         if (hasAnyData) {
             statusLabel.setText("Gene found: " + searchedGeneId + " - annotations loaded");
             statusLabel.setForeground(new Color(0, 128, 0));
@@ -489,6 +524,7 @@ public class GeneInfoViewerDialog extends JDialog {
             statusLabel.setText("Gene not found: " + searchedGeneId);
             statusLabel.setForeground(Color.RED);
             setTabsEnabled(false);
+            viewInGenomeButton.setEnabled(false);
             geneStructureAdvancedButton.setEnabled(false);
             exportButton.setEnabled(false);
         }
@@ -508,6 +544,7 @@ public class GeneInfoViewerDialog extends JDialog {
             statusLabel.setText("Search error for gene: " + searchedGeneId + " - " + error.getMessage());
             statusLabel.setForeground(Color.RED);
             setTabsEnabled(false);
+            viewInGenomeButton.setEnabled(false);
             geneStructureAdvancedButton.setEnabled(false);
             exportButton.setEnabled(false);
         }
@@ -528,6 +565,7 @@ public class GeneInfoViewerDialog extends JDialog {
         
         // Reset interface state
         setTabsEnabled(false);
+        viewInGenomeButton.setEnabled(false);
         geneStructureAdvancedButton.setEnabled(false);
         exportButton.setEnabled(false);
         updateSearchStatus();
@@ -576,6 +614,73 @@ public class GeneInfoViewerDialog extends JDialog {
     private void closeDialog() {
         // No unsaved data to worry about, just close
         dispose();
+    }
+
+    /**
+     * Opens the genome browser on the gene that is currently displayed. The gene's stored
+     * position is resolved from the annotation index first, then the browser is opened on that
+     * range - the same jump the browser's own position query performs.
+     */
+    private void openCurrentGeneInGenomeBrowser() {
+        if (currentGeneId == null || currentSpecies == null) {
+            showWarning("Please search for a gene first.");
+            return;
+        }
+
+        File genomeFile = currentSpecies.getGenomeFile();
+        if (genomeFile == null || !genomeFile.isFile()) {
+            showWarning("No genome FASTA file was found for this genome unit.");
+            return;
+        }
+
+        final SpeciesInfo species = currentSpecies;
+        final String geneId = currentGeneId;
+        final File annotationFile = species.getAnnotationFile() != null && species.getAnnotationFile().isFile()
+            ? species.getAnnotationFile()
+            : null;
+
+        viewInGenomeButton.setEnabled(false);
+        statusLabel.setText("Locating " + geneId + " in the annotation of " + species.getDisplayName() + "...");
+        statusLabel.setForeground(Color.BLUE);
+
+        SwingWorker<GeneSetSupport.Entry, Void> worker = new SwingWorker<GeneSetSupport.Entry, Void>() {
+            @Override
+            protected GeneSetSupport.Entry doInBackground() {
+                return dataRetriever.findAnnotationEntry(species, geneId);
+            }
+
+            @Override
+            protected void done() {
+                viewInGenomeButton.setEnabled(true);
+
+                GeneSetSupport.Entry entry = null;
+                try {
+                    entry = get();
+                } catch (Exception e) {
+                    logger.warning("Failed to locate " + geneId + " in the annotation: " + e.getMessage());
+                }
+
+                if (entry == null || !entry.hasCoordinate()) {
+                    statusLabel.setText("No position is stored for: " + geneId);
+                    statusLabel.setForeground(SimpleGenomeHubStyle.STATUS_WARNING_TEXT);
+                    showWarning("The annotation of " + species.getDisplayName()
+                        + " does not hold a chromosome and position for:\n" + geneId);
+                    return;
+                }
+
+                String title = species.getSpeciesName() + " " + species.getVersion() + " - Genome Browser";
+                GenomeBrowserFrame.openAt(SwingUtilities.getWindowAncestor(GeneInfoViewerDialog.this),
+                    genomeFile, annotationFile, title,
+                    entry.getChromosomeName(), (int) entry.getStartPos(), (int) entry.getEndPos(),
+                    species, speciesManager);
+
+                statusLabel.setText("Genome browser opened at " + entry.getChromosomeName() + ":"
+                    + entry.getStartPos() + "-" + entry.getEndPos() + " for " + geneId);
+                statusLabel.setForeground(new Color(0, 128, 0));
+            }
+        };
+
+        worker.execute();
     }
 
     private void openGeneStructureAdvancedView() {

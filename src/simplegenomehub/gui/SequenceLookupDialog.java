@@ -5,6 +5,7 @@ package simplegenomehub.gui;
 
 import simplegenomehub.model.SpeciesInfo;
 import simplegenomehub.util.fileio.CachedSequenceLookup;
+import simplegenomehub.util.fileio.GeneSetSupport;
 
 import javax.swing.*;
 import javax.swing.border.TitledBorder;
@@ -254,6 +255,23 @@ public class SequenceLookupDialog extends JDialog {
             @Override
             public void windowClosing(WindowEvent e) {
                 dispose();
+            }
+        });
+    }
+
+    void searchForId(String sequenceId) {
+        if (sequenceId == null || sequenceId.trim().isEmpty()) {
+            return;
+        }
+
+        String normalizedId = sequenceId.trim();
+        idInputArea.setText(normalizedId);
+        idInputArea.setCaretPosition(0);
+        clearDisplayedResults();
+        statusLabel.setText("Searching for: " + normalizedId + "...");
+        SwingUtilities.invokeLater(() -> {
+            if (isDisplayable()) {
+                performSearch();
             }
         });
     }
@@ -741,18 +759,9 @@ public class SequenceLookupDialog extends JDialog {
     }
 
     private List<String> readGeneSetIds(File geneSetFile) throws IOException {
-        LinkedHashSet<String> ids = new LinkedHashSet<>();
-        try (BufferedReader reader = new BufferedReader(new FileReader(geneSetFile))) {
-            String line;
-            while ((line = reader.readLine()) != null) {
-                String trimmed = line.trim();
-                if (trimmed.isEmpty() || trimmed.startsWith("#####")) {
-                    continue;
-                }
-                ids.add(trimmed);
-            }
-        }
-        return new ArrayList<>(ids);
+        // Shared parser: skips comments and keeps only the first column, so both the
+        // legacy bare-id files and the new id+chromosome+start+end rows work.
+        return GeneSetSupport.parseIds(GeneSetSupport.readContent(geneSetFile));
     }
 
     private String extractGeneSetDisplayName(File geneSetFile) {

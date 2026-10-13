@@ -904,7 +904,7 @@ public final class MultipleSyntenyService {
             normalized.add(new GenomeSelection(
                 selection.getSlotNumber(),
                 selection.getSpecies(),
-                normalizeChromosomes(selection.getChromosomes())
+                selection.getChromosomes()
             ));
         }
         return normalized;

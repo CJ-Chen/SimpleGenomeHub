@@ -66,7 +66,10 @@ public class SpeciesInfoPanel extends JPanel {
      * Initialize components
      */
     private void initializeComponents() {
-        overviewPanel = new SpeciesOverviewPanel();
+        overviewPanel = new SpeciesOverviewPanel(
+            this::openFastaExtractForGene,
+            this::openGeneDetailForGene
+        );
         actionsPanel = new SpeciesActionsPanel();
     }
     
@@ -100,6 +103,7 @@ public class SpeciesInfoPanel extends JPanel {
         actionsPanel.getGeneViewerButton().addActionListener(e -> showGeneInfoMenu());
         actionsPanel.getGenomeAnalysisButton().addActionListener(e -> showGenomeAnalysisMenu());
         actionsPanel.getBlastAnalysisButton().addActionListener(e -> openBlastAnalysisDialog());
+        actionsPanel.getPopulationAnalysisButton().addActionListener(e -> showPopulationAnalysisMenu());
 
         overviewPanel.getNotesArea().addFocusListener(new java.awt.event.FocusAdapter() {
             @Override
@@ -122,6 +126,10 @@ public class SpeciesInfoPanel extends JPanel {
         SpeciesInfo species = selectionContext != null ? selectionContext.getSpecies() : null;
         this.currentSpecies = species;
         updateDisplay();
+        if (selectionContext != null
+                && selectionContext.getSelectionKind() == SpeciesTreePanel.SelectionKind.GENE_SET_FILE) {
+            overviewPanel.showGeneSet(selectionContext.getSelectedFile());
+        }
         overviewPanel.applyOtherDataSelection(selectionContext);
     }
     
@@ -168,7 +176,8 @@ public class SpeciesInfoPanel extends JPanel {
             hasGeneSetSupport,
             hasDirectory,
             hasDirectory,
-            hasDirectory
+            hasDirectory,
+            hasDirectory && hasGenome
         );
     }
     
@@ -302,6 +311,35 @@ public class SpeciesInfoPanel extends JPanel {
                 "No Species Selected",
                 JOptionPane.WARNING_MESSAGE);
         }
+    }
+
+    private void openFastaExtractForGene(SpeciesInfo species, String geneId) {
+        if (species == null || geneId == null || geneId.trim().isEmpty()) {
+            return;
+        }
+
+        SequenceLookupDialog dialog = new SequenceLookupDialog(
+            SwingUtilities.getWindowAncestor(this), species);
+        dialog.setVisible(true);
+        dialog.searchForId(geneId);
+    }
+
+    private void openGeneDetailForGene(SpeciesInfo species, String geneId) {
+        if (species == null || geneId == null || geneId.trim().isEmpty()) {
+            return;
+        }
+        if (speciesManager == null) {
+            JOptionPane.showMessageDialog(this,
+                "Species manager is unavailable.",
+                "Cannot Open Gene Detail",
+                JOptionPane.ERROR_MESSAGE);
+            return;
+        }
+
+        GeneInfoViewerDialog dialog = new GeneInfoViewerDialog(
+            SwingUtilities.getWindowAncestor(this), speciesManager, species);
+        dialog.setVisible(true);
+        dialog.searchForGeneId(geneId);
     }
     
     /**
@@ -863,6 +901,42 @@ public class SpeciesInfoPanel extends JPanel {
                 }
             });
         dialog.setVisible(true);
+    }
+
+    private void showPopulationAnalysisMenu() {
+        // Bind the import to the selected genome, not to a mutable panel selection.
+        final SpeciesInfo species = currentSpecies;
+        if (species == null || !species.hasGenomeFiles()) {
+            return;
+        }
+
+        JPopupMenu menu = new JPopupMenu();
+        JMenuItem importItem = new JMenuItem("Import VCF File");
+        importItem.addActionListener(e -> {
+            VcfImportDialog dialog = new VcfImportDialog(
+                SwingUtilities.getWindowAncestor(this), species, () -> {
+                    if (speciesManager != null
+                            && speciesManager.getSpecies(species.getSpeciesName(), species.getVersion()) == species) {
+                        speciesManager.updateSpecies(species);
+                    }
+                });
+            dialog.setVisible(true);
+        });
+        menu.add(importItem);
+
+        JMenuItem analysisItem = new JMenuItem("Population Variation Analysis");
+        // Enabled for any selected genome: a dragged-in temporary VCF can be analyzed even when
+        // nothing has been imported yet.
+        analysisItem.addActionListener(e -> {
+            PopulationVariationDialog dialog = new PopulationVariationDialog(
+                SwingUtilities.getWindowAncestor(this), species);
+            dialog.setVisible(true);
+        });
+        menu.add(analysisItem);
+
+        JButton anchor = actionsPanel.getPopulationAnalysisButton();
+        SimpleGenomeHubUi.stylePopupMenu(menu);
+        menu.show(anchor, 0, anchor.getHeight());
     }
 
     /**

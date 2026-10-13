@@ -1,6 +1,7 @@
 package simplegenomehub.gui;
 
 import simplegenomehub.model.SpeciesInfo;
+import simplegenomehub.util.fileio.GeneSetSupport;
 import simplegenomehub.util.fileio.SequenceExtractor;
 
 import java.io.File;
@@ -56,6 +57,28 @@ final class GeneSetImportSupport {
         return files;
     }
 
+    static List<File> loadAvailableRegionSetFiles(SpeciesInfo species) {
+        List<File> files = new ArrayList<>();
+        if (species == null) {
+            return files;
+        }
+
+        File geneSetDir = species.getGeneSetDir();
+        if (geneSetDir == null || !geneSetDir.isDirectory()) {
+            return files;
+        }
+
+        File[] regionSetFiles = geneSetDir.listFiles((dir, name) ->
+            GeneSetFileSupport.detectSetKind(name) == GeneSetFileSupport.SetKind.REGION);
+        if (regionSetFiles == null || regionSetFiles.length == 0) {
+            return files;
+        }
+
+        Arrays.sort(regionSetFiles, java.util.Comparator.comparing(File::getName, String.CASE_INSENSITIVE_ORDER));
+        Collections.addAll(files, regionSetFiles);
+        return files;
+    }
+
     static ImportedGeneSet importIds(SpeciesInfo species, File setFile, OutputIdType outputIdType) throws Exception {
         if (species == null) {
             throw new IllegalArgumentException("Species context is required.");
@@ -78,7 +101,7 @@ final class GeneSetImportSupport {
 
             AnnotationIndex annotationIndex = loadAnnotationIndex(species);
             if (outputIdType == OutputIdType.GENE) {
-                List<String> geneIds = resolveGeneIdsFromGeneSet(annotationIndex, inputIds);
+                List<String> geneIds = resolveGeneIds(annotationIndex, inputIds).getResolvedGeneIds();
                 if (geneIds.isEmpty()) {
                     throw new NoGeneFoundException("No Gene Found");
                 }
@@ -107,6 +130,49 @@ final class GeneSetImportSupport {
 
     static List<String> collectOverlappingTranscriptIds(SpeciesInfo species, File regionSetFile) throws Exception {
         return collectOverlappingIds(species, regionSetFile, OutputIdType.TRANSCRIPT);
+    }
+
+    static List<String> collectContainedGeneIds(SpeciesInfo species, File regionSetFile) throws Exception {
+        if (species == null) {
+            throw new IllegalArgumentException("Species context is required.");
+        }
+        if (regionSetFile == null || !regionSetFile.isFile()) {
+            throw new IllegalArgumentException("Selected Region Set file is not available.");
+        }
+
+        List<GeneSetFileSupport.RegionEntry> regionEntries = loadRegionEntries(regionSetFile);
+        if (regionEntries.isEmpty()) {
+            return new ArrayList<>();
+        }
+
+        AnnotationIndex annotationIndex = loadAnnotationIndex(species);
+        List<GeneRecord> geneRecords = annotationIndex.getGeneRecords();
+        if (geneRecords.isEmpty()) {
+            return new ArrayList<>();
+        }
+
+        Map<String, List<GeneRecord>> recordsByChromosome = new LinkedHashMap<>();
+        for (GeneRecord record : geneRecords) {
+            recordsByChromosome.computeIfAbsent(record.chromosome, ignored -> new ArrayList<>()).add(record);
+        }
+
+        Set<String> containedGeneIds = new LinkedHashSet<>();
+        for (GeneSetFileSupport.RegionEntry entry : regionEntries) {
+            List<GeneRecord> chromosomeRecords = recordsByChromosome.get(entry.getChromosomeName());
+            if (chromosomeRecords == null || chromosomeRecords.isEmpty()) {
+                continue;
+            }
+
+            long regionStart = Math.min(entry.getStartPos(), entry.getEndPos());
+            long regionEnd = Math.max(entry.getStartPos(), entry.getEndPos());
+            for (GeneRecord record : chromosomeRecords) {
+                if (regionStart <= record.start && record.end <= regionEnd) {
+                    containedGeneIds.add(record.primaryId);
+                }
+            }
+        }
+
+        return new ArrayList<>(containedGeneIds);
     }
 
     static List<String> collectOverlappingIds(SpeciesInfo species, File regionSetFile,
@@ -228,6 +294,14 @@ final class GeneSetImportSupport {
             );
         }
 
+        collectDirectTranscriptGeneMappings(
+            featuresByType,
+            transcriptsByGene,
+            transcriptAliasToCanonical,
+            geneAliasToCanonical,
+            geneIdByTranscriptId
+        );
+
         if (geneRecords.isEmpty() && !transcriptRecords.isEmpty()) {
             Map<String, MergedGeneRecord> mergedTranscriptRecords = new LinkedHashMap<>();
             for (TranscriptRecord transcriptRecord : transcriptRecords) {
@@ -261,6 +335,10 @@ final class GeneSetImportSupport {
             geneAliasToCanonical,
             geneIdByTranscriptId
         );
+    }
+
+    static GeneIdResolution resolveGeneIds(SpeciesInfo species, List<String> inputIds) throws Exception {
+        return resolveGeneIds(loadAnnotationIndex(species), inputIds);
     }
 
     private static List<SequenceExtractor.FeatureInfo> getFeaturesIgnoreCase(
@@ -310,6 +388,28 @@ final class GeneSetImportSupport {
         }
     }
 
+    private static void collectDirectTranscriptGeneMappings(
+            Map<String, List<SequenceExtractor.FeatureInfo>> featuresByType,
+            Map<String, LinkedHashSet<String>> transcriptsByGene,
+            Map<String, String> transcriptAliasToCanonical,
+            Map<String, String> geneAliasToCanonical,
+            Map<String, String> geneIdByTranscriptId) {
+        for (List<SequenceExtractor.FeatureInfo> features : featuresByType.values()) {
+            for (SequenceExtractor.FeatureInfo feature : features) {
+                String transcriptId = resolveDirectTranscriptId(feature);
+                String geneId = resolveDirectGeneId(feature);
+                if (!hasText(transcriptId) || !hasText(geneId)) {
+                    continue;
+                }
+
+                registerTranscriptAliases(transcriptAliasToCanonical, transcriptId, feature);
+                registerGeneAliases(geneAliasToCanonical, geneId, feature, false);
+                transcriptsByGene.computeIfAbsent(geneId, ignored -> new LinkedHashSet<>()).add(transcriptId);
+                geneIdByTranscriptId.putIfAbsent(transcriptId, geneId);
+            }
+        }
+    }
+
     private static List<String> resolveTranscriptIdsFromGeneSet(AnnotationIndex annotationIndex, List<String> inputIds) {
         LinkedHashSet<String> transcriptIds = new LinkedHashSet<>();
 
@@ -329,26 +429,25 @@ final class GeneSetImportSupport {
         return new ArrayList<>(transcriptIds);
     }
 
-    private static List<String> resolveGeneIdsFromGeneSet(AnnotationIndex annotationIndex, List<String> inputIds) {
+    private static GeneIdResolution resolveGeneIds(AnnotationIndex annotationIndex, List<String> inputIds) {
         LinkedHashSet<String> geneIds = new LinkedHashSet<>();
+        LinkedHashSet<String> missingIds = new LinkedHashSet<>();
 
         for (String inputId : inputIds) {
-            String canonicalTranscriptId = annotationIndex.findCanonicalTranscriptId(inputId);
-            if (canonicalTranscriptId != null) {
-                String geneId = annotationIndex.getGeneIdForTranscript(canonicalTranscriptId);
-                if (hasText(geneId)) {
-                    geneIds.add(geneId);
-                }
+            if (!hasText(inputId)) {
                 continue;
             }
 
-            String canonicalGeneId = annotationIndex.findCanonicalGeneId(inputId);
+            String trimmedInputId = inputId.trim();
+            String canonicalGeneId = annotationIndex.findCanonicalGeneId(trimmedInputId);
             if (hasText(canonicalGeneId)) {
                 geneIds.add(canonicalGeneId);
+            } else {
+                missingIds.add(trimmedInputId);
             }
         }
 
-        return new ArrayList<>(geneIds);
+        return new GeneIdResolution(geneIds, missingIds);
     }
 
     private static Map<String, List<? extends GenomicRecord>> groupRecordsByChromosome(List<? extends GenomicRecord> records) {
@@ -421,6 +520,38 @@ final class GeneSetImportSupport {
         return null;
     }
 
+    private static String resolveDirectGeneId(SequenceExtractor.FeatureInfo feature) {
+        if (feature == null) {
+            return null;
+        }
+        if (hasText(feature.getGeneId())) {
+            return feature.getGeneId().trim();
+        }
+        if (hasText(feature.getAttribute("gene_id"))) {
+            return feature.getAttribute("gene_id").trim();
+        }
+        if (hasText(feature.getAttribute("geneID"))) {
+            return feature.getAttribute("geneID").trim();
+        }
+        if (hasText(feature.getAttribute("gene"))) {
+            return feature.getAttribute("gene").trim();
+        }
+        return null;
+    }
+
+    private static String resolveDirectTranscriptId(SequenceExtractor.FeatureInfo feature) {
+        if (feature == null) {
+            return null;
+        }
+        if (hasText(feature.getTranscriptId())) {
+            return feature.getTranscriptId().trim();
+        }
+        if (hasText(feature.getAttribute("transcript_id"))) {
+            return feature.getAttribute("transcript_id").trim();
+        }
+        return null;
+    }
+
     private static String resolveTranscriptId(SequenceExtractor.FeatureInfo feature) {
         if (feature == null) {
             return null;
@@ -480,7 +611,18 @@ final class GeneSetImportSupport {
         if (!hasText(alias) || !hasText(canonicalId)) {
             return;
         }
-        aliasMap.putIfAbsent(alias.trim(), canonicalId.trim());
+        String trimmedAlias = alias.trim();
+        String trimmedCanonicalId = canonicalId.trim();
+        aliasMap.putIfAbsent(trimmedAlias, trimmedCanonicalId);
+
+        int prefixSeparator = trimmedAlias.indexOf(':');
+        if (prefixSeparator > 0 && prefixSeparator < trimmedAlias.length() - 1) {
+            String prefix = trimmedAlias.substring(0, prefixSeparator).toLowerCase(Locale.ROOT);
+            if ("gene".equals(prefix) || "transcript".equals(prefix) || "mrna".equals(prefix)
+                || "rna".equals(prefix)) {
+                aliasMap.putIfAbsent(trimmedAlias.substring(prefixSeparator + 1), trimmedCanonicalId);
+            }
+        }
     }
 
     private static boolean hasText(String value) {
@@ -508,6 +650,24 @@ final class GeneSetImportSupport {
 
         List<String> getIds() {
             return new ArrayList<>(ids);
+        }
+    }
+
+    static final class GeneIdResolution {
+        private final List<String> resolvedGeneIds;
+        private final List<String> missingIds;
+
+        GeneIdResolution(Collection<String> resolvedGeneIds, Collection<String> missingIds) {
+            this.resolvedGeneIds = new ArrayList<>(resolvedGeneIds);
+            this.missingIds = new ArrayList<>(missingIds);
+        }
+
+        List<String> getResolvedGeneIds() {
+            return new ArrayList<>(resolvedGeneIds);
+        }
+
+        List<String> getMissingIds() {
+            return new ArrayList<>(missingIds);
         }
     }
 
@@ -605,6 +765,20 @@ final class GeneSetImportSupport {
             return new ArrayList<>(transcriptRecords);
         }
 
+        /**
+         * Canonical transcript id -> gene-set row with its chromosome and location.
+         * Lets callers build the rows while this index is already in memory, so a save
+         * never needs a second annotation parse.
+         */
+        Map<String, GeneSetSupport.Entry> entriesById() {
+            Map<String, GeneSetSupport.Entry> byId = new LinkedHashMap<>();
+            for (TranscriptRecord record : transcriptRecords) {
+                byId.putIfAbsent(record.transcriptId, new GeneSetSupport.Entry(
+                    record.transcriptId, record.chromosome, record.start, record.end, 0));
+            }
+            return byId;
+        }
+
         List<String> getTranscriptsForGene(String geneId) {
             String canonicalGeneId = findCanonicalGeneId(geneId);
             if (!hasText(canonicalGeneId)) {
@@ -638,6 +812,13 @@ final class GeneSetImportSupport {
             }
 
             return null;
+        }
+
+        String findExactCanonicalGeneId(String geneId) {
+            if (!hasText(geneId)) {
+                return null;
+            }
+            return geneAliasToCanonical.get(geneId.trim());
         }
 
         String getGeneIdForTranscript(String transcriptId) {

@@ -1,12 +1,16 @@
 package simplegenomehub.gui;
 
 import simplegenomehub.model.SpeciesInfo;
+import simplegenomehub.util.fileio.GeneSetSupport;
 
 import javax.swing.*;
 import java.awt.Component;
 import java.util.ArrayList;
+import java.util.Collection;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 
 final class GeneSetGeneIdValidationSupport {
 
@@ -14,12 +18,26 @@ final class GeneSetGeneIdValidationSupport {
     }
 
     static ValidationResult validateGeneIds(SpeciesInfo species, List<String> inputIds) throws Exception {
+        return validateGeneIds(species, inputIds, false);
+    }
+
+    static ValidationResult validateGeneIdsFailFast(SpeciesInfo species, List<String> inputIds) throws Exception {
+        return validateGeneIds(species, inputIds, true);
+    }
+
+    private static ValidationResult validateGeneIds(SpeciesInfo species, List<String> inputIds,
+                                                     boolean stopOnFirstMissingId) throws Exception {
         GeneDataRetriever dataRetriever = new GeneDataRetriever();
+        // Loaded once: the same index answers the resolution below and the locations we hand
+        // back, so saving a set never has to parse the annotation a second time.
         GeneSetImportSupport.AnnotationIndex annotationIndex = GeneSetImportSupport.loadAnnotationIndex(species);
+        Map<String, GeneSetSupport.Entry> entriesById = annotationIndex.entriesById();
 
         LinkedHashSet<String> resolvedTranscriptIds = new LinkedHashSet<>();
         List<String> missingIds = new ArrayList<>();
         List<String> correctedLines = new ArrayList<>();
+        // Which input id produced which saved ids, so per-id notes can follow the resolution.
+        Map<String, List<String>> resolvedIdsByInputId = new LinkedHashMap<>();
 
         for (String inputId : inputIds) {
             if (inputId == null || inputId.trim().isEmpty()) {
@@ -27,63 +45,102 @@ final class GeneSetGeneIdValidationSupport {
             }
 
             String trimmedInputId = inputId.trim();
+            List<String> resolved = new ArrayList<>();
+            String note = null;
+
             String canonicalTranscriptId = annotationIndex.findCanonicalTranscriptId(trimmedInputId);
             if (canonicalTranscriptId != null) {
-                resolvedTranscriptIds.add(canonicalTranscriptId);
+                resolved.add(canonicalTranscriptId);
                 if (!canonicalTranscriptId.equals(trimmedInputId)) {
-                    correctedLines.add("Transcript found: " + trimmedInputId + " -> " + canonicalTranscriptId);
+                    note = "Transcript found: " + trimmedInputId + " -> " + canonicalTranscriptId;
+                }
+            }
+
+            if (resolved.isEmpty()) {
+                List<String> geneTranscriptIds = annotationIndex.getTranscriptsForGene(trimmedInputId);
+                if (!geneTranscriptIds.isEmpty()) {
+                    resolved.addAll(geneTranscriptIds);
+                    note = "Gene expanded: " + trimmedInputId + " -> " + describe(geneTranscriptIds);
+                }
+            }
+
+            if (resolved.isEmpty()) {
+                String matchedTranscriptId = annotationIndex.findBestTranscriptMatch(trimmedInputId);
+                if (matchedTranscriptId != null) {
+                    resolved.add(matchedTranscriptId);
+                    if (!matchedTranscriptId.equals(trimmedInputId)) {
+                        note = "Transcript matched: " + trimmedInputId + " -> " + matchedTranscriptId;
+                    }
+                }
+            }
+
+            if (resolved.isEmpty()) {
+                GeneSearchResult searchResult = dataRetriever.searchGene(trimmedInputId, species);
+                if (searchResult != null && searchResult.isFound()) {
+                    List<String> resolvedGeneTranscripts =
+                        annotationIndex.getTranscriptsForGene(searchResult.getResolvedGeneId());
+                    if (!resolvedGeneTranscripts.isEmpty()) {
+                        resolved.addAll(resolvedGeneTranscripts);
+                        note = "Gene found by search: " + trimmedInputId + " -> "
+                            + describe(resolvedGeneTranscripts);
+                    }
+                }
+            }
+
+            if (resolved.isEmpty()) {
+                String matchedGeneId = annotationIndex.findBestGeneMatch(trimmedInputId);
+                if (matchedGeneId != null) {
+                    List<String> matchedGeneTranscripts = annotationIndex.getTranscriptsForGene(matchedGeneId);
+                    if (!matchedGeneTranscripts.isEmpty()) {
+                        resolved.addAll(matchedGeneTranscripts);
+                        note = "Gene matched: " + trimmedInputId + " -> " + describe(matchedGeneTranscripts);
+                    }
+                }
+            }
+
+            if (resolved.isEmpty()) {
+                missingIds.add(trimmedInputId);
+                if (stopOnFirstMissingId) {
+                    return new ValidationResult(new ArrayList<>(resolvedTranscriptIds), missingIds, correctedLines,
+                        entriesFor(entriesById, resolvedTranscriptIds), resolvedIdsByInputId);
                 }
                 continue;
             }
 
-            List<String> geneTranscriptIds = annotationIndex.getTranscriptsForGene(trimmedInputId);
-            if (!geneTranscriptIds.isEmpty()) {
-                resolvedTranscriptIds.addAll(geneTranscriptIds);
-                correctedLines.add("Gene expanded: " + trimmedInputId + " -> "
-                    + geneTranscriptIds.size() + " transcripts");
-                continue;
+            resolvedIdsByInputId.put(trimmedInputId, new ArrayList<>(resolved));
+            resolvedTranscriptIds.addAll(resolved);
+            if (note != null) {
+                correctedLines.add(note);
             }
-
-            GeneSearchResult searchResult = dataRetriever.searchGene(trimmedInputId, species);
-            String matchedTranscriptId = annotationIndex.findBestTranscriptMatch(trimmedInputId);
-            if (matchedTranscriptId != null) {
-                resolvedTranscriptIds.add(matchedTranscriptId);
-                if (!matchedTranscriptId.equals(trimmedInputId)) {
-                    correctedLines.add("Transcript found: " + trimmedInputId + " -> " + matchedTranscriptId);
-                }
-                continue;
-            }
-
-            if (searchResult != null && searchResult.isFound()) {
-                String resolvedGeneId = searchResult.getResolvedGeneId();
-                List<String> resolvedGeneTranscripts = annotationIndex.getTranscriptsForGene(resolvedGeneId);
-                if (!resolvedGeneTranscripts.isEmpty()) {
-                    resolvedTranscriptIds.addAll(resolvedGeneTranscripts);
-                    correctedLines.add("Gene expanded: " + trimmedInputId + " -> "
-                        + resolvedGeneTranscripts.size() + " transcripts");
-                    continue;
-                }
-            }
-
-            String matchedGeneId = annotationIndex.findBestGeneMatch(trimmedInputId);
-            if (matchedGeneId != null) {
-                List<String> matchedGeneTranscripts = annotationIndex.getTranscriptsForGene(matchedGeneId);
-                if (!matchedGeneTranscripts.isEmpty()) {
-                    resolvedTranscriptIds.addAll(matchedGeneTranscripts);
-                    correctedLines.add("Gene expanded: " + trimmedInputId + " -> "
-                        + matchedGeneTranscripts.size() + " transcripts");
-                    continue;
-                }
-            }
-
-            missingIds.add(trimmedInputId);
         }
 
-        return new ValidationResult(
-            new ArrayList<>(resolvedTranscriptIds),
-            missingIds,
-            correctedLines
-        );
+        return new ValidationResult(new ArrayList<>(resolvedTranscriptIds), missingIds, correctedLines,
+            entriesFor(entriesById, resolvedTranscriptIds), resolvedIdsByInputId);
+    }
+
+    /**
+     * Names what an input id resolved to. A single transcript is spelled out - the plain
+     * count ("-> 1 transcripts") told the user nothing about which transcript was picked.
+     */
+    private static String describe(List<String> transcriptIds) {
+        if (transcriptIds.size() == 1) {
+            return transcriptIds.get(0);
+        }
+        if (transcriptIds.size() <= 3) {
+            return transcriptIds.size() + " transcripts: " + String.join(", ", transcriptIds);
+        }
+        return transcriptIds.size() + " transcripts";
+    }
+
+    /** Locations of the resolved transcripts, ready to be written into the set file. */
+    private static List<GeneSetSupport.Entry> entriesFor(
+            Map<String, GeneSetSupport.Entry> entriesById, Collection<String> transcriptIds) {
+        List<GeneSetSupport.Entry> entries = new ArrayList<>();
+        for (String transcriptId : transcriptIds) {
+            GeneSetSupport.Entry entry = entriesById.get(transcriptId);
+            entries.add(entry == null ? new GeneSetSupport.Entry(transcriptId, "", 0, 0, 0) : entry);
+        }
+        return entries;
     }
 
     static void showValidationResult(Component parent, ValidationResult validationResult) {
@@ -116,13 +173,28 @@ final class GeneSetGeneIdValidationSupport {
             }
         }
 
-        if (!validationResult.getCorrectedGeneLines().isEmpty()) {
+        if (!validationResult.getResolvedEntries().isEmpty()) {
             if (builder.length() > 0) {
                 builder.append('\n');
             }
             builder.append("Resolved IDs:\n");
+            for (GeneSetSupport.Entry entry : validationResult.getResolvedEntries()) {
+                builder.append("  ").append(entry.getId());
+                if (entry.hasCoordinate()) {
+                    builder.append("   ").append(entry.getChromosomeName())
+                        .append(':').append(entry.getStartPos()).append('-').append(entry.getEndPos());
+                }
+                builder.append('\n');
+            }
+        }
+
+        if (!validationResult.getCorrectedGeneLines().isEmpty()) {
+            if (builder.length() > 0) {
+                builder.append('\n');
+            }
+            builder.append("Corrections:\n");
             for (String correctedLine : validationResult.getCorrectedGeneLines()) {
-                builder.append(correctedLine).append('\n');
+                builder.append("  ").append(correctedLine).append('\n');
             }
         }
 
@@ -133,12 +205,27 @@ final class GeneSetGeneIdValidationSupport {
         private final List<String> resolvedGeneIds;
         private final List<String> missingGeneIds;
         private final List<String> correctedGeneLines;
+        /** The resolved transcripts with their chromosome and location: what gets saved. */
+        private final List<GeneSetSupport.Entry> resolvedEntries;
+        /** Input id -> the ids it resolved to; missing when the input id was already canonical. */
+        private final Map<String, List<String>> resolvedIdsByInputId;
 
         ValidationResult(List<String> resolvedGeneIds, List<String> missingGeneIds,
-                         List<String> correctedGeneLines) {
+                         List<String> correctedGeneLines, List<GeneSetSupport.Entry> resolvedEntries,
+                         Map<String, List<String>> resolvedIdsByInputId) {
             this.resolvedGeneIds = resolvedGeneIds;
             this.missingGeneIds = missingGeneIds;
             this.correctedGeneLines = correctedGeneLines;
+            this.resolvedEntries = resolvedEntries;
+            this.resolvedIdsByInputId = resolvedIdsByInputId;
+        }
+
+        Map<String, List<String>> getResolvedIdsByInputId() {
+            return resolvedIdsByInputId;
+        }
+
+        List<GeneSetSupport.Entry> getResolvedEntries() {
+            return resolvedEntries;
         }
 
         List<String> getResolvedGeneIds() {
