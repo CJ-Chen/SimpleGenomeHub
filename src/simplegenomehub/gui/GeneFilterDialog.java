@@ -475,11 +475,14 @@ public class GeneFilterDialog extends JDialog {
             File tempMatrixFile = createTempMatrixFileForHeatmap();
             
             // Use HeatmapControl2
+            HubPlotOwnership ownership = new HubPlotOwnership(this);
             HeatmapControl2 heatmapControl = new HeatmapControl2();
+            heatmapControl.setResultComponentRegistrar(ownership);
             heatmapControl.setInFile(tempMatrixFile);
             
             // Show the heatmap directly without dialog
-            heatmapControl.showMeTheHeatMap();
+            ownership.run(heatmapControl::showMeTheHeatMap);
+            if (!ownership.isCurrent()) return;
             
             // Clean up temp file after a delay
             javax.swing.Timer cleanupTimer = new javax.swing.Timer(30000, e -> {

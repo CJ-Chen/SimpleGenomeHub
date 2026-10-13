@@ -1532,60 +1532,64 @@ public class BlastResultsPanel extends JPanel {
      * Display phylogenetic tree
      */
     private void displayTree(File treeFile, String queryIdForTree, int n) {
+        HubPlotOwnership ownership = new HubPlotOwnership(this);
         try {
-            // Read tree file content as Newick string
-            StringBuilder newickString = new StringBuilder();
-            try (java.io.BufferedReader reader = new java.io.BufferedReader(new java.io.FileReader(treeFile))) {
-                String line;
-                while ((line = reader.readLine()) != null) {
-                    newickString.append(line);
-                }
-            }
-
-            System.err.println("Newick string: " + newickString.toString());
-
-            // Use PhyloTreeMan to parse and plot tree from Newick string
-            biocjava.bioDoer.JIGplotToolkit.newickParser.PhyloTreeMan ptm =
-                new biocjava.bioDoer.JIGplotToolkit.newickParser.PhyloTreeMan();
-
-            PhyloTreeNode rootedNode = null;
-
-            // Try to apply MAD rooting
-            try {
-                System.err.println("Applying MAD rooting to phylogenetic tree...");
-
-                // Apply MAD rooting to the tree
-                rootedNode = ptm.madPoints(newickString.toString());
-
-                System.err.println("MAD rooting completed successfully");
-            } catch (Exception madError) {
-                // Fall back to unrooted tree if MAD rooting fails
-                System.err.println("MAD rooting failed, will display unrooted tree: " + madError.getMessage());
-                madError.printStackTrace();
-            }
-
-            // Plot the tree (quickPlotTree will create and show its own JFrame window)
-            // If MAD rooting succeeded, use rooted tree; otherwise use original Newick string
-            jigplot.engine.JIGSubPanel treePanel;
-            if (rootedNode != null) {
-                treePanel = ptm.quickPlotTree(rootedNode);
-            } else {
-                treePanel = ptm.quickPlotTree(newickString.toString());
-            }
-
-            // Highlight query sequence ID in red
-            String queryId = normalizeFastaIdentifier(queryIdForTree);
-            for (jigplot.engine.JIGElement curEle : treePanel.getElementList()) {
-                if (curEle.getElementType() == jigplot.engine.JIGConstants.ElementType.Text) {
-                    if (queryId.equals(curEle.getText().trim())) {
-                        curEle.setDrawColor(Color.RED);
+            ownership.run(() -> {
+                // Read tree file content as Newick string
+                StringBuilder newickString = new StringBuilder();
+                try (java.io.BufferedReader reader = new java.io.BufferedReader(new java.io.FileReader(treeFile))) {
+                    String line;
+                    while ((line = reader.readLine()) != null) {
+                        newickString.append(line);
                     }
                 }
-            }
 
-            // Note: quickPlotTree() creates and displays its own JFrame window automatically
-            // We don't need to create another window here
+                System.err.println("Newick string: " + newickString.toString());
 
+                // Use PhyloTreeMan to parse and plot tree from Newick string
+                biocjava.bioDoer.JIGplotToolkit.newickParser.PhyloTreeMan ptm =
+                    new biocjava.bioDoer.JIGplotToolkit.newickParser.PhyloTreeMan();
+                ptm.setResultComponentRegistrar(ownership);
+
+                PhyloTreeNode rootedNode = null;
+
+                // Try to apply MAD rooting
+                try {
+                    System.err.println("Applying MAD rooting to phylogenetic tree...");
+
+                    // Apply MAD rooting to the tree
+                    rootedNode = ptm.madPoints(newickString.toString());
+
+                    System.err.println("MAD rooting completed successfully");
+                } catch (Exception madError) {
+                    // Fall back to unrooted tree if MAD rooting fails
+                    System.err.println("MAD rooting failed, will display unrooted tree: " + madError.getMessage());
+                    madError.printStackTrace();
+                }
+
+                // Plot the tree (quickPlotTree will create and show its own JFrame window)
+                // If MAD rooting succeeded, use rooted tree; otherwise use original Newick string
+                jigplot.engine.JIGSubPanel treePanel;
+                if (rootedNode != null) {
+                    treePanel = ptm.quickPlotTree(rootedNode);
+                } else {
+                    treePanel = ptm.quickPlotTree(newickString.toString());
+                }
+
+                // Highlight query sequence ID in red
+                String queryId = normalizeFastaIdentifier(queryIdForTree);
+                for (jigplot.engine.JIGElement curEle : treePanel.getElementList()) {
+                    if (curEle.getElementType() == jigplot.engine.JIGConstants.ElementType.Text) {
+                        if (queryId.equals(curEle.getText().trim())) {
+                            curEle.setDrawColor(Color.RED);
+                        }
+                    }
+                }
+
+                // Note: quickPlotTree() creates and displays its own JFrame window automatically
+                // We don't need to create another window here
+
+            });
         } catch (Exception e) {
             JOptionPane.showMessageDialog(BlastResultsPanel.this,
                 "Error displaying tree: " + e.getMessage(),

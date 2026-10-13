@@ -637,11 +637,14 @@ public class ExpressionHeatmapDialog extends JDialog {
             File tempMatrixFile = createTempMatrixFile();
             
             // Use JIGplot HeatmapControl
+            HubPlotOwnership ownership = new HubPlotOwnership(this);
             HeatmapControl heatmapControl = new HeatmapControl();
+            heatmapControl.setResultComponentRegistrar(ownership);
             heatmapControl.setInFile(tempMatrixFile);
             
             // Show the heatmap
-            heatmapControl.showMeTheHeatMap();
+            ownership.run(heatmapControl::showMeTheHeatMap);
+            if (!ownership.isCurrent()) return;
             
             // Clean up temp file after a delay
             Timer cleanupTimer = new Timer(30000, e -> {

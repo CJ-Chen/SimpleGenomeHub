@@ -1557,6 +1557,7 @@ public class GOEnrichmentDialog extends JDialog {
      * 创建GO富集分析结果的可视化
      */
     private void createVisualization() {
+        final HubPlotOwnership ownership = new HubPlotOwnership(this);
         if (currentResults.isEmpty()) {
             JOptionPane.showMessageDialog(this, 
                 "No enrichment results available for visualization", 
@@ -1579,8 +1580,10 @@ public class GOEnrichmentDialog extends JDialog {
                 
                 // 使用用户配置的参数创建可视化
                 SwingUtilities.invokeLater(() -> {
+                    if (!ownership.isCurrent()) return;
                     try {
                         Barplot bp = new Barplot();
+                        bp.setResultComponentRegistrar(ownership);
                         bp.setInTabFile(tempFile);
                         bp.setTermColName("GO_Name");
                         bp.setpValueColName(configDialog.getPValueColumn());
@@ -1592,7 +1595,8 @@ public class GOEnrichmentDialog extends JDialog {
                         bp.setGraphMode(configDialog.getGraphMode());
                         
                         // 生成可视化
-                        bp.generate();
+                        ownership.run(bp::generate);
+                        if (!ownership.isCurrent()) return;
                         
                         statusLabel.setText("Visualization created successfully");
                         statusLabel.setForeground(Color.BLUE);

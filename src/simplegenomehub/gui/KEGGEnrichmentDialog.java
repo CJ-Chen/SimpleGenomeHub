@@ -1315,6 +1315,7 @@ public class KEGGEnrichmentDialog extends JDialog {
      * Create visualization using TBtools Barplot
      */
     private void createVisualization() {
+        final HubPlotOwnership ownership = new HubPlotOwnership(this);
         if (tableModel.getRowCount() == 0) {
             JOptionPane.showMessageDialog(this,
                 "No enrichment results available for visualization.",
@@ -1354,6 +1355,7 @@ public class KEGGEnrichmentDialog extends JDialog {
             
             // Create and configure Barplot
             Barplot barplot = new Barplot();
+            barplot.setResultComponentRegistrar(ownership);
             barplot.setInTabFile(tempFile);
             barplot.setTermColName("Term Name");
             barplot.setClassColName("Class");
@@ -1366,7 +1368,8 @@ public class KEGGEnrichmentDialog extends JDialog {
             
             // Generate visualization (TBtools will display it automatically)
             statusLabel.setText("Generating KEGG enrichment visualization...");
-            barplot.generate();
+            ownership.run(barplot::generate);
+            if (!ownership.isCurrent()) return;
             statusLabel.setText("KEGG enrichment visualization created successfully");
             
         } catch (Exception e) {
