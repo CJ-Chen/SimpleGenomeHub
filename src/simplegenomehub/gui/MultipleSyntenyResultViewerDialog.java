@@ -93,7 +93,7 @@ public class MultipleSyntenyResultViewerDialog extends JDialog {
         simplegenomehub.runtime.HubSession session = simplegenomehub.runtime.HubSession.getExplicitOwner(this);
         if (session != null) {
             graphPanel.setOwnedDialogRegistrar(window -> SimpleGenomeHubFontManager.registerOwnedWindowTree(window, session));
-            session.guardActionsIn(this);
+            SimpleGenomeHubFontManager.registerOwnedWindowTree(this, session);
         }
     }
 
