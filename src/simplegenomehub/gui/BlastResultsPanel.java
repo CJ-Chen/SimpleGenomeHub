@@ -10,10 +10,12 @@ import simplegenomehub.blast.model.BlastResult;
 import simplegenomehub.blast.model.BlastResult.BlastHit;
 import simplegenomehub.blast.model.BlastQuery;
 import simplegenomehub.blast.BlastExecutor;
-import simplegenomehub.config.ApplicationLayout;
+import simplegenomehub.blast.BlastConfig;
+import simplegenomehub.blast.BlastDatabaseSequenceExtractor;
+import simplegenomehub.runtime.HubSession;
+import simplegenomehub.runtime.HubToolResolver;
 import simplegenomehub.model.SpeciesInfo;
 import simplegenomehub.util.fileio.TranscriptToGeneMapper;
-import biocjava.bioDoer.BLAST.BlastZone.BlastZone.FecthSeqFromDB;
 import biocjava.bioDoer.JIGplotToolkit.newickParser.PhyloTreeNode;
 
 import javax.swing.*;
@@ -1005,10 +1007,13 @@ public class BlastResultsPanel extends JPanel {
 
         // Step 2: Execute tree building in background
         final String selectedQueryId = treeQueryId;
-        HubWorker<File, Void> worker = new HubWorker<File, Void>() {
+        final BlastResult selectedResult = currentResult;
+        final File selectedDatabase = selectedResult.getTargetDatabase() != null
+            ? selectedResult.getTargetDatabase() : currentBlastDatabase;
+        HubWorker<File, Void> worker = new HubWorker<File, Void>(HubWorker.CancellationPolicy.INTERRUPT_SAFE) {
             @Override
             protected File doInBackground() throws Exception {
-                return executeTreeBuilding(n, selectedQueryId);
+                return executeTreeBuilding(n, selectedQueryId, selectedResult, selectedDatabase);
             }
 
             @Override
@@ -1039,13 +1044,22 @@ public class BlastResultsPanel extends JPanel {
      * Execute tree building with top N hits
      */
     private File executeTreeBuilding(int n, String treeQueryId) throws Exception {
-        List<BlastHit> allHits = currentResult.getHits();
+        BlastResult result = currentResult;
+        if (result == null) throw new IOException("No BLAST result is available for tree building");
+        return executeTreeBuilding(n, treeQueryId, result,
+            result.getTargetDatabase() != null ? result.getTargetDatabase() : currentBlastDatabase);
+    }
+
+    private File executeTreeBuilding(int n, String treeQueryId, BlastResult result, File database) throws Exception {
+        checkTreeCancelled();
+        if (n <= 0) throw new IllegalArgumentException("The number of tree hits must be positive");
+        List<BlastHit> allHits = result.getHits();
         List<BlastHit> queryHits = filterHitsByQueryId(allHits, treeQueryId);
         if (queryHits.isEmpty()) {
             throw new Exception("No BLAST hits found for query ID: " + treeQueryId);
         }
 
-        FastaRecord queryRecord = resolveQuerySequenceRecord(treeQueryId);
+        FastaRecord queryRecord = resolveQuerySequenceRecord(treeQueryId, result);
 
         // Get all hits and deduplicate by Hit ID (keep first occurrence from top)
         Set<String> seenHitIds = new HashSet<>();
@@ -1070,78 +1084,29 @@ public class BlastResultsPanel extends JPanel {
                          ", Unique hits: " + uniqueHits.size() +
                          ", Selected top N: " + actualN);
 
-        // Create temporary files
-        File tmpIdFile = File.createTempFile("SimpleGenomeHub_hit_ids_", ".txt");
-        tmpIdFile.deleteOnExit();
-        File tmpHitSeq = File.createTempFile("SimpleGenomeHub_hit_seq_", ".fasta");
-        tmpHitSeq.deleteOnExit();
+        // Read the database actually searched. Unparsed v4 IDs cannot be fetched
+        // with blastdbcmd -entry_batch, and source FASTA may have changed since BLAST.
+        List<String> requestedIds = new ArrayList<>();
+        for (BlastHit hit : topHits) requestedIds.add(hit.getHitId());
+        BlastConfig.SequenceType sequenceType = result.getOriginalQuery() != null
+            ? result.getOriginalQuery().getTargetSequenceType() : BlastConfig.SequenceType.PROTEIN;
+        if (sequenceType == null) sequenceType = BlastConfig.SequenceType.PROTEIN;
+        List<BlastDatabaseSequenceExtractor.SequenceRecord> hitRecords = BlastDatabaseSequenceExtractor.extract(
+            database, sequenceType, requestedIds, HubSession.forComponent(this));
+        checkTreeCancelled();
         File tmpFasta = File.createTempFile("SimpleGenomeHub_blast_tree_", ".fasta");
         tmpFasta.deleteOnExit();
-
-        // Write hit IDs to file for FecthSeqFromDB
-        try (PrintWriter idWriter = new PrintWriter(new FileWriter(tmpIdFile))) {
-            for (BlastHit hit : topHits) {
-                idWriter.println(hit.getHitId());
+        try (BufferedWriter writer = new BufferedWriter(new FileWriter(tmpFasta))) {
+            writer.write(">" + queryRecord.id); writer.newLine();
+            writer.write(queryRecord.sequence); writer.newLine();
+            for (BlastDatabaseSequenceExtractor.SequenceRecord hitRecord : hitRecords) {
+                checkTreeCancelled();
+                writer.write(">" + hitRecord.getId()); writer.newLine();
+                writer.write(hitRecord.getSequence()); writer.newLine();
             }
         }
 
-        // Extract hit sequences from BLAST database using TBtools FecthSeqFromDB
-        if (currentBlastDatabase != null) {
-            File dbFile = currentBlastDatabase;
-            System.err.println("DEBUG: Database path: " + dbFile.getAbsolutePath());
-
-            // Check if at least one database file exists (e.g., .pin for protein, .nin for nucleotide)
-            File dbDir = dbFile.getParentFile();
-            String dbName = dbFile.getName();
-            boolean dbExists = false;
-
-            if (dbDir != null && dbDir.exists()) {
-                System.err.println("DEBUG: Database directory exists: " + dbDir.getAbsolutePath());
-                System.err.println("DEBUG: Database name: " + dbName);
-
-                // Check for protein database files (.pin)
-                File pinFile = new File(dbDir, dbName + ".pin");
-                // Check for nucleotide database files (.nin)
-                File ninFile = new File(dbDir, dbName + ".nin");
-
-                System.err.println("DEBUG: Checking .pin file: " + pinFile.getAbsolutePath() + " exists=" + pinFile.exists());
-                System.err.println("DEBUG: Checking .nin file: " + ninFile.getAbsolutePath() + " exists=" + ninFile.exists());
-
-                dbExists = pinFile.exists() || ninFile.exists();
-            } else {
-                System.err.println("DEBUG: Database directory does NOT exist or is null");
-            }
-
-            if (dbExists) {
-                FecthSeqFromDB fetcher = new FecthSeqFromDB();
-                fetcher.setDbFile(dbFile);
-                fetcher.setInFile(tmpIdFile);
-                fetcher.setOutFile(tmpHitSeq);
-                fetcher.process();
-                ensureNonEmptyFile(tmpHitSeq, "Extracted hit sequence FASTA");
-            } else {
-                throw new Exception("Target database files not found at: " + dbFile.getAbsolutePath() +
-                                  "\nPlease ensure BLAST database was created successfully.");
-            }
-        } else {
-            throw new Exception("BLAST database path not set. Please run BLAST search first.");
-        }
-
-        // Combine query + hit sequences into final FASTA file
-        List<FastaRecord> hitRecords = readFastaRecords(tmpHitSeq, "Extracted hit sequence FASTA");
-        List<FastaRecord> orderedHitRecords = orderHitRecords(topHits, hitRecords);
-        System.err.println("DEBUG: Extracted hit FASTA records: " + hitRecords.size());
-        try (PrintWriter writer = new PrintWriter(new FileWriter(tmpFasta))) {
-            writer.println(">" + queryRecord.id);
-            writer.println(queryRecord.sequence);
-
-            for (FastaRecord hitRecord : orderedHitRecords) {
-                writer.println(">" + hitRecord.id);
-                writer.println(hitRecord.sequence);
-            }
-        }
-
-        int sequenceCount = 1 + orderedHitRecords.size();
+        int sequenceCount = 1 + hitRecords.size();
         ensureNonEmptyFile(tmpFasta, "Combined tree input FASTA");
         System.err.println("DEBUG: Combined tree FASTA: " + tmpFasta.getAbsolutePath());
 
@@ -1165,7 +1130,10 @@ public class BlastResultsPanel extends JPanel {
                 alnFile,
                 "MUSCLE5 alignment"
             );
+        } catch (InterruptedException | java.util.concurrent.CancellationException cancelled) {
+            throw cancelled;
         } catch (Exception ex) {
+            checkTreeCancelled();
             muscle5Error = ex;
             System.err.println("DEBUG: MUSCLE5 alignment failed, falling back to MUSCLE. " + ex.getMessage());
         }
@@ -1182,7 +1150,10 @@ public class BlastResultsPanel extends JPanel {
                     alnFile,
                     "MUSCLE alignment"
                 );
+            } catch (InterruptedException | java.util.concurrent.CancellationException cancelled) {
+                throw cancelled;
             } catch (Exception ex) {
+                checkTreeCancelled();
                 if (muscle5Error != null) {
                     throw new Exception(
                         "Failed to generate multiple alignment.\n"
@@ -1263,12 +1234,16 @@ public class BlastResultsPanel extends JPanel {
     }
 
     private FastaRecord resolveQuerySequenceRecord(String treeQueryId) throws Exception {
+        return resolveQuerySequenceRecord(treeQueryId, currentResult);
+    }
+
+    private FastaRecord resolveQuerySequenceRecord(String treeQueryId, BlastResult result) throws Exception {
         String normalizedTreeQueryId = normalizeFastaIdentifier(treeQueryId);
-        BlastQuery originalQuery = currentResult.getOriginalQuery();
+        BlastQuery originalQuery = result.getOriginalQuery();
 
         if (originalQuery == null) {
             List<FastaRecord> fallbackRecords = parseFastaText(
-                currentResult.getQuerySequence(),
+                result.getQuerySequence(),
                 normalizedTreeQueryId,
                 "BLAST query sequence"
             );
@@ -1456,59 +1431,37 @@ public class BlastResultsPanel extends JPanel {
     }
 
     private String resolveTreeExecutable(String... baseNames) throws Exception {
-        List<File> candidateDirectories = new ArrayList<>();
-        File appHome = ApplicationLayout.getAppHomeDirectory();
-        String userDir = System.getProperty("user.dir", ".");
-        File userDirFile = new File(userDir).getAbsoluteFile();
-
-        for (File directory : ApplicationLayout.getToolSearchDirectories(appHome)) {
-            addToolDirectory(candidateDirectories, directory);
-        }
-        if (!userDirFile.getAbsolutePath().equalsIgnoreCase(appHome.getAbsolutePath())) {
-            for (File directory : ApplicationLayout.getToolSearchDirectories(userDirFile)) {
-                addToolDirectory(candidateDirectories, directory);
-            }
-        }
-
+        checkTreeCancelled();
+        IllegalStateException missing = null;
         for (String baseName : baseNames) {
-            for (File directory : candidateDirectories) {
-                File executable = ApplicationLayout.resolveExecutable(directory, baseName);
-                if (executable != null) {
-                    return executable.getAbsolutePath();
-                }
-            }
+            try {
+                HubToolResolver.ResolvedTool tool = HubToolResolver.resolveTool(baseName, null);
+                System.err.println("Tree executable: " + tool);
+                return tool.getExecutable();
+            } catch (java.util.concurrent.CancellationException cancelled) { throw cancelled; }
+            catch (IllegalStateException failure) { missing = failure; }
         }
-
-        if (baseNames.length == 0) {
-            throw new Exception("No executable was specified for tree building.");
-        }
-        return baseNames[0];
+        throw new IOException(missing == null ? "No executable was specified for tree building." : missing.getMessage(), missing);
     }
 
-    private void addToolDirectory(List<File> directories, File directory) {
-        if (directory == null || !directory.isDirectory()) {
-            return;
-        }
-
-        String candidatePath = directory.getAbsolutePath();
-        for (File existing : directories) {
-            if (existing.getAbsolutePath().equalsIgnoreCase(candidatePath)) {
-                return;
-            }
-        }
-        directories.add(directory);
+    private void checkTreeCancelled() throws InterruptedException {
+        HubSession session = HubSession.forComponent(this);
+        if (Thread.currentThread().isInterrupted() || (session != null && !session.isActive()))
+            throw new InterruptedException("BLAST tree building cancelled");
     }
 
     private void runTreeCommand(List<String> command, File workingDirectory, File expectedOutput, String stepName)
             throws Exception {
+        checkTreeCancelled();
         String commandLine = String.join(" ", command);
         biocjava.bioDoer.BLAST.ToolProcessRunner.Result result;
         try {
             ProcessBuilder builder = new ProcessBuilder(command).directory(workingDirectory);
-            result = simplegenomehub.runtime.HubProcessRunner.run(builder, 30, TimeUnit.MINUTES);
+            result = simplegenomehub.runtime.HubProcessRunner.run(HubSession.forComponent(this), builder, 30, TimeUnit.MINUTES);
         } catch (IOException failure) {
             throw new IOException(stepName + " failed.\nCommand: " + commandLine + "\n" + failure.getMessage(), failure);
         }
+        checkTreeCancelled();
         if (result.exitCode != 0) {
             throw new Exception(stepName + " failed with exit code " + result.exitCode
                 + ".\nCommand: " + commandLine + "\nOutput:\n" + result.output);

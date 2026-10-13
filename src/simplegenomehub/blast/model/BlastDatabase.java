@@ -12,6 +12,10 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.Properties;
 import java.util.logging.Logger;
+import java.nio.file.Files;
+import java.nio.file.attribute.BasicFileAttributes;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 
 /**
  * Model class representing a BLAST database
@@ -33,6 +37,8 @@ public class BlastDatabase {
     private long sourceFileSize;
     private int sequenceCount;
     private String sourceFilePath;
+    private String sourceContentDigest;
+    private File boundSourceFile;
     private Map<String, String> customMetadata;
     
     /**
@@ -40,6 +46,12 @@ public class BlastDatabase {
      */
     public BlastDatabase(File databaseDir, SequenceType sequenceType, 
                         File sourceFile) throws IOException {
+        this(databaseDir, sequenceType, sourceFile, null);
+    }
+
+    /** The digest, when supplied, describes the immutable input used by makeblastdb. */
+    public BlastDatabase(File databaseDir, SequenceType sequenceType,
+                         File sourceFile, String indexedSourceDigest) throws IOException {
         this.databaseDir = databaseDir;
         this.databaseName = sequenceType.toString().toLowerCase();
         this.sequenceType = sequenceType;
@@ -49,6 +61,10 @@ public class BlastDatabase {
         this.sourceFileSize = sourceFile.length();
         this.sourceFilePath = sourceFile.getAbsolutePath();
         this.customMetadata = new HashMap<>();
+        this.sourceContentDigest = digestSourceFile(sourceFile);
+        if (indexedSourceDigest != null && !indexedSourceDigest.equals(sourceContentDigest))
+            throw new IOException("Source FASTA changed while its BLAST database was being built: " + sourceFile);
+        this.boundSourceFile = sourceFile.getCanonicalFile();
         
         // Count sequences in source file
         this.sequenceCount = countSequencesInFasta(sourceFile);
@@ -82,6 +98,7 @@ public class BlastDatabase {
         db.sourceFileSize = Long.parseLong(props.getProperty("source.file.size", "0"));
         db.sequenceCount = Integer.parseInt(props.getProperty("sequence.count", "0"));
         db.sourceFilePath = props.getProperty("source.file.path", "");
+        db.sourceContentDigest = props.getProperty("source.sha256", "");
         db.customMetadata = new HashMap<>();
         
         // Load custom metadata
@@ -114,12 +131,54 @@ public class BlastDatabase {
      * Check if database is up to date compared to source file
      */
     public boolean isUpToDate(File sourceFile) {
-        if (!sourceFile.exists()) {
+        try { return bindSourceFile(sourceFile); }
+        catch (IOException failure) {
+            logger.warning("Cannot verify BLAST source identity: " + failure.getMessage());
             return false;
         }
-        
-        return sourceFile.lastModified() <= sourceFileModificationTime &&
-               sourceFile.length() == sourceFileSize;
+    }
+
+    /** Bind only the current species' source; historical metadata paths are never a fallback. */
+    public synchronized boolean bindSourceFile(File sourceFile) throws IOException {
+        boundSourceFile = null;
+        // Legacy metadata has no proof of sequence content or ordinal order. Rebuild it once.
+        if (sourceFile == null || !sourceFile.isFile() || !sourceContentDigest.matches("[0-9a-f]{64}")
+            || sourceFile.length() != sourceFileSize) return false;
+        if (!sourceContentDigest.equals(digestSourceFile(sourceFile))) return false;
+        boundSourceFile = sourceFile.getCanonicalFile();
+        return true;
+    }
+
+    /** Recheck before mapping BLAST ordinals, since the source may change during a long search. */
+    public synchronized File requireVerifiedSourceFile() throws IOException {
+        File source = boundSourceFile;
+        if (source == null || !bindSourceFile(source))
+            throw new IOException("BLAST source is unbound or its content has changed; rebuild the database: " + databaseDir);
+        return source;
+    }
+
+    /** A streaming, byte-exact identity includes FASTA headers and record order. */
+    public static String digestSourceFile(File source) throws IOException {
+        BasicFileAttributes before = Files.readAttributes(source.toPath(), BasicFileAttributes.class);
+        if (!before.isRegularFile()) throw new IOException("Source FASTA is not a regular file: " + source);
+        MessageDigest digest;
+        try { digest = MessageDigest.getInstance("SHA-256"); }
+        catch (NoSuchAlgorithmException impossible) { throw new IllegalStateException(impossible); }
+        try (InputStream input = Files.newInputStream(source.toPath())) {
+            byte[] buffer = new byte[65536];
+            int length;
+            while ((length = input.read(buffer)) >= 0) {
+                if (Thread.currentThread().isInterrupted()) throw new InterruptedIOException("BLAST source verification cancelled");
+                if (length > 0) digest.update(buffer, 0, length);
+            }
+        }
+        BasicFileAttributes after = Files.readAttributes(source.toPath(), BasicFileAttributes.class);
+        if (before.size() != after.size() || !before.lastModifiedTime().equals(after.lastModifiedTime())
+            || !java.util.Objects.equals(before.fileKey(), after.fileKey()))
+            throw new IOException("Source FASTA changed while verifying its content: " + source);
+        StringBuilder encoded = new StringBuilder(64);
+        for (byte value : digest.digest()) encoded.append(String.format(java.util.Locale.ROOT, "%02x", value & 0xff));
+        return encoded.toString();
     }
     
     /**
@@ -139,6 +198,20 @@ public class BlastDatabase {
 
     /** v4 databases larger than makeblastdb's volume limit use .00/.01 indexes plus an alias. */
     private java.util.List<File> requiredFiles() {
+        return requiredFiles(databaseDir, databaseName, molecularType);
+    }
+
+    /** Shared by extraction of old databases that have no SGH metadata. */
+    public static boolean hasCompleteIndex(File databasePrefix, MolecularType molecularType) {
+        if (databasePrefix == null || molecularType == null) return false;
+        File absolute = databasePrefix.getAbsoluteFile();
+        java.util.List<File> files = requiredFiles(absolute.getParentFile(), absolute.getName(), molecularType);
+        if (files.isEmpty()) return false;
+        for (File file : files) if (!file.isFile() || file.length() < 10) return false;
+        return true;
+    }
+
+    private static java.util.List<File> requiredFiles(File databaseDir, String databaseName, MolecularType molecularType) {
         java.util.List<File> files = new java.util.ArrayList<>();
         String[] extensions = molecularType.getRequiredExtensions();
         File alias = new File(databaseDir, databaseName + (molecularType == MolecularType.PROTEIN ? ".pal" : ".nal"));
@@ -223,6 +296,7 @@ public class BlastDatabase {
         props.setProperty("source.file.size", String.valueOf(sourceFileSize));
         props.setProperty("sequence.count", String.valueOf(sequenceCount));
         props.setProperty("source.file.path", sourceFilePath);
+        if (sourceContentDigest != null && !sourceContentDigest.isEmpty()) props.setProperty("source.sha256", sourceContentDigest);
         
         // Save custom metadata
         for (Map.Entry<String, String> entry : customMetadata.entrySet()) {
@@ -342,8 +416,11 @@ public class BlastDatabase {
     }
     
     public String getSourceFilePath() {
-        return sourceFilePath;
+        File source = boundSourceFile;
+        return source == null ? sourceFilePath : source.getAbsolutePath();
     }
+
+    public String getSourceContentDigest() { return sourceContentDigest; }
     
     public Map<String, String> getCustomMetadata() {
         return new HashMap<>(customMetadata);

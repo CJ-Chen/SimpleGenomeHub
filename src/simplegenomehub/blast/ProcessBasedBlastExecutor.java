@@ -86,7 +86,7 @@ public class ProcessBasedBlastExecutor {
         
         String makeblastdbCmd = config.resolveBlastCommand("makeblastdb");
         
-        File sourceFile = new File(targetDb.getSourceFilePath());
+        File sourceFile = targetDb.requireVerifiedSourceFile();
         File dbDir = new File(targetDb.getDatabasePath()).getParentFile();
         
         // Ensure database directory exists
@@ -279,9 +279,11 @@ public class ProcessBasedBlastExecutor {
     /**
      * Parse XML results using TBtools BlastXmlReader
      */
-    private void parseXmlResults(BlastResult result, File outputFile, BlastDatabase targetDb) {
+    private void parseXmlResults(BlastResult result, File outputFile, BlastDatabase targetDb) throws IOException {
         try {
             logger.info("Starting XML parsing with TBtools BlastXmlToBlastFoolTable: " + outputFile.getAbsolutePath());
+            // Fail before exposing any result when a long search outlived its source snapshot.
+            Map<Integer, String> idMapping = getSequenceIdMapping(targetDb);
             
             // Step 1: Convert XML to table format using TBtools
             File tempTableFile = File.createTempFile("blast_table_", ".tsv");
@@ -308,7 +310,7 @@ public class ProcessBasedBlastExecutor {
                 }
                 
                 // Convert table record to our BlastHit format
-                BlastResult.BlastHit hit = convertTableRecord(record, targetDb);
+                BlastResult.BlastHit hit = convertTableRecord(record, idMapping);
                 if (hit != null) {
                     hits.add(hit);
                 }
@@ -328,13 +330,17 @@ public class ProcessBasedBlastExecutor {
             e.printStackTrace();
             result.setSuccessful(false);
             result.setErrorMessage("XML parsing failed: " + e.getMessage());
+            // The async caller reports failure through its throwable branch;
+            // returning a flagged result here would display Completed / 0 hits.
+            throw new IOException(result.getErrorMessage(), e);
         }
     }
     
     /**
      * Convert BlastTableRecord to our BlastHit format
      */
-    private BlastResult.BlastHit convertTableRecord(biocjava.bioIO.BlastXml.BlastTableRecord record, BlastDatabase targetDb) {
+    private BlastResult.BlastHit convertTableRecord(biocjava.bioIO.BlastXml.BlastTableRecord record,
+                                                    Map<Integer, String> idMapping) throws IOException {
         try {
             BlastResult.BlastHit hit = new BlastResult.BlastHit();
             
@@ -342,7 +348,7 @@ public class ProcessBasedBlastExecutor {
             hit.setQueryId(record.getQseqid());
             
             // Basic hit information from table record - extract original sequence ID from FASTA
-            String originalHitId = extractOriginalSequenceId(record.getSseqid(), targetDb);
+            String originalHitId = extractOriginalSequenceId(record.getSseqid(), idMapping);
             hit.setHitId(originalHitId);
             hit.setHitDef(originalHitId); // Use original sequence ID as definition
             
@@ -373,6 +379,8 @@ public class ProcessBasedBlastExecutor {
             
             return hit;
             
+        } catch (IOException invalidMapping) {
+            throw invalidMapping;
         } catch (Exception e) {
             logger.warning("Failed to convert table record: " + e.getMessage() + 
                           " for record: " + record.toString());
@@ -403,62 +411,49 @@ public class ProcessBasedBlastExecutor {
      * Extract original sequence ID from BLAST internal ID format
      * Handles formats like "gnl|BL_ORD_ID|7259" by mapping back to original sequence IDs
      */
-    private String extractOriginalSequenceId(String blastInternalId, BlastDatabase targetDb) {
+    private String extractOriginalSequenceId(String blastInternalId, Map<Integer, String> idMapping) throws IOException {
         // If not in BLAST internal format, return as-is
         if (!blastInternalId.startsWith("gnl|BL_ORD_ID|")) {
             return blastInternalId;
         }
         
         // Extract the ordinal number from gnl|BL_ORD_ID|XXXX format
-        try {
-            String ordinalStr = blastInternalId.substring("gnl|BL_ORD_ID|".length());
-            int ordinal = Integer.parseInt(ordinalStr);
-            
-            // Get or build sequence ID mapping for this database
-            File source = new File(targetDb.getSourceFilePath());
-            String dbKey = source.getCanonicalPath() + "|" + source.lastModified() + "|" + source.length();
-            Map<Integer, String> idMapping = sequenceIdMappings.get(dbKey);
-            
-            if (idMapping == null) {
-                // Build mapping from FASTA file
-                idMapping = buildSequenceIdMapping(new File(targetDb.getSourceFilePath()));
-                sequenceIdMappings.put(dbKey, idMapping);
-            }
-            
-            // Look up original ID by ordinal
-            String originalId = idMapping.get(ordinal);
-            if (originalId != null) {
-                logger.fine("Mapped ordinal " + ordinal + " to original ID: " + originalId);
-                return originalId;
-            } else {
-                logger.warning("No mapping found for ordinal " + ordinal + " in database " + dbKey + 
-                              ". Available mappings: " + idMapping.size());
-                return "Unknown_" + ordinal;
-            }
-            
-        } catch (Exception e) {
-            logger.warning("Failed to parse BLAST internal ID: " + blastInternalId + ". Using as-is.");
-            return blastInternalId;
+        final int ordinal;
+        try { ordinal = Integer.parseInt(blastInternalId.substring("gnl|BL_ORD_ID|".length())); }
+        catch (NumberFormatException invalid) { throw new IOException("Invalid BLAST ordinal: " + blastInternalId, invalid); }
+        String originalId = idMapping.get(ordinal);
+        if (originalId == null)
+            throw new IOException("No verified source sequence for BLAST ordinal " + ordinal + "; rerun the search");
+        return originalId;
+    }
+
+    private Map<Integer, String> getSequenceIdMapping(BlastDatabase targetDb) throws IOException {
+        File source = targetDb.requireVerifiedSourceFile();
+        String dbKey = source.getCanonicalPath() + "|" + targetDb.getSourceContentDigest();
+        Map<Integer, String> mapping = sequenceIdMappings.get(dbKey);
+        if (mapping == null) {
+            mapping = Collections.unmodifiableMap(buildSequenceIdMapping(source, targetDb.getSourceContentDigest()));
+            sequenceIdMappings.put(dbKey, mapping);
         }
+        return mapping;
     }
     
     /**
      * Create mapping from BLAST ordinal IDs to original sequence IDs
      * This method reads the original FASTA file to build the mapping
      */
-    private Map<Integer, String> buildSequenceIdMapping(File fastaFile) {
+    private Map<Integer, String> buildSequenceIdMapping(File fastaFile, String expectedDigest) throws IOException {
         Map<Integer, String> mapping = new HashMap<>();
-        
-        if (!fastaFile.exists()) {
-            logger.warning("FASTA file not found for ID mapping: " + fastaFile.getAbsolutePath());
-            return mapping;
-        }
-        
-        try (BufferedReader reader = new BufferedReader(new FileReader(fastaFile))) {
+        java.security.MessageDigest digest;
+        try { digest = java.security.MessageDigest.getInstance("SHA-256"); }
+        catch (java.security.NoSuchAlgorithmException impossible) { throw new IllegalStateException(impossible); }
+        try (BufferedReader reader = new BufferedReader(new InputStreamReader(new java.security.DigestInputStream(
+                Files.newInputStream(fastaFile.toPath()), digest), java.nio.charset.Charset.defaultCharset()))) {
             String line;
             int sequenceOrdinal = 0; // BLAST ordinals are 0-based
             
             while ((line = reader.readLine()) != null) {
+                if (Thread.currentThread().isInterrupted()) throw new InterruptedIOException("BLAST ID mapping cancelled");
                 if (line.startsWith(">")) {
                     // Extract sequence ID from FASTA header
                     String header = line.substring(1); // Remove ">"
@@ -473,9 +468,11 @@ public class ProcessBasedBlastExecutor {
             logger.info("Built sequence ID mapping for " + fastaFile.getName() + 
                        ": " + mapping.size() + " sequences");
             
-        } catch (IOException e) {
-            logger.log(Level.WARNING, "Failed to build sequence ID mapping for " + fastaFile.getAbsolutePath(), e);
         }
+        StringBuilder encoded = new StringBuilder(64);
+        for (byte value : digest.digest()) encoded.append(String.format(Locale.ROOT, "%02x", value & 0xff));
+        if (!expectedDigest.equals(encoded.toString()))
+            throw new IOException("Source FASTA changed while mapping BLAST ordinals; rerun the search: " + fastaFile);
         
         return mapping;
     }
@@ -485,30 +482,6 @@ public class ProcessBasedBlastExecutor {
      * Handles various FASTA header formats
      */
     private String extractSequenceIdFromHeader(String header) {
-        // Common formats:
-        // >AT1G01010.1 | Symbols: NAC001 | chr1:3631-5899 FORWARD
-        // >Aco015073.1 hypothetical protein
-        // >gi|123456|ref|NP_123456.1| description
-        
-        // Split by whitespace and take the first part as the primary ID
-        String[] parts = header.trim().split("\\s+");
-        if (parts.length > 0) {
-            String primaryId = parts[0];
-            
-            // Remove common prefixes if present
-            if (primaryId.startsWith("gi|")) {
-                // Handle NCBI format: gi|123456|ref|NP_123456.1|
-                String[] giParts = primaryId.split("\\|");
-                if (giParts.length >= 4) {
-                    return giParts[3]; // Return the accession part
-                }
-            }
-            
-            // For most cases, just return the first part
-            return primaryId;
-        }
-        
-        // Fallback: return the entire header if parsing fails
-        return header;
+        return BlastSequenceIds.fromFastaHeader(header);
     }
 }

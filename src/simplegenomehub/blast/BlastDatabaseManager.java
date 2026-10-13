@@ -142,6 +142,7 @@ public class BlastDatabaseManager {
         synchronized (BUILD_LOCKS.computeIfAbsent(dbDir.getCanonicalPath(), ignored -> new Object())) {
             BlastDatabase existing = loadDatabaseFromDisk(dbDir, seqType);
             if (existing != null && existing.isUpToDate(sourceFile)) return existing;
+            checkCancelled();
             java.nio.file.Path parent = dbDir.toPath().toAbsolutePath().getParent();
             java.nio.file.Files.createDirectories(parent);
             java.nio.file.Path staging = java.nio.file.Files.createTempDirectory(parent, ".sgh-blast-build-");
@@ -152,13 +153,13 @@ public class BlastDatabaseManager {
                 simplegenomehub.runtime.HubToolResolver.ResolvedTool tool =
                     simplegenomehub.runtime.HubToolResolver.resolveTool("makeblastdb", config.getBlastExecutablePath());
                 logger.info("Building BLAST database with " + tool);
-                createIndex(tool.getExecutable(), session, sourceFile, staging.toFile(),
+                String indexedSourceDigest = createIndex(tool.getExecutable(), session, sourceFile, staging.toFile(),
                     seqType.toString().toLowerCase(), seqType.getMolecularType());
                 checkCancelled();
                 java.nio.file.Path oldMetadata = dbDir.toPath().resolve("database.info");
                 if (java.nio.file.Files.isRegularFile(oldMetadata))
                     java.nio.file.Files.copy(oldMetadata, staging.resolve("database.info"));
-                BlastDatabase database = new BlastDatabase(staging.toFile(), seqType, sourceFile);
+                BlastDatabase database = new BlastDatabase(staging.toFile(), seqType, sourceFile, indexedSourceDigest);
                 if (!database.isValid()) throw new IOException("makeblastdb did not produce a complete database");
                 database.addMetadataChecked("creation_duration_ms", String.valueOf(System.currentTimeMillis() - startTime));
                 database.addMetadataChecked("species_name", species.getSpeciesName());
@@ -177,7 +178,10 @@ public class BlastDatabaseManager {
                     throw failedPublish;
                 }
                 published = true;
-                return BlastDatabase.loadFromDisk(dbDir, seqType);
+                BlastDatabase result = BlastDatabase.loadFromDisk(dbDir, seqType);
+                if (!result.bindSourceFile(sourceFile))
+                    throw new IOException("Source FASTA changed before its BLAST database could be used: " + sourceFile);
+                return result;
             } finally {
                 deleteScratch(staging);
                 // If restoring a failed publication also fails, preserve the old directory for recovery.
@@ -205,23 +209,24 @@ public class BlastDatabaseManager {
     }
     
     /** NCBI BLAST parses -in/-out itself; use local ASCII names even when the data root contains spaces. */
-    static void createIndex(BlastConfig config, simplegenomehub.runtime.HubSession session, File source,
+    static String createIndex(BlastConfig config, simplegenomehub.runtime.HubSession session, File source,
                             File directory, String name, BlastConfig.MolecularType molecularType) throws Exception {
-        createIndex(config.resolveBlastCommand("makeblastdb"), session, source, directory, name, molecularType);
+        return createIndex(config.resolveBlastCommand("makeblastdb"), session, source, directory, name, molecularType);
     }
 
-    private static void createIndex(String executable, simplegenomehub.runtime.HubSession session, File source,
+    private static String createIndex(String executable, simplegenomehub.runtime.HubSession session, File source,
                             File directory, String name, BlastConfig.MolecularType molecularType) throws Exception {
         java.nio.file.Path input = java.nio.file.Files.createTempFile(directory.toPath(), "sgh-input-", ".fa");
         try {
-            java.nio.file.Files.delete(input);
-            try { java.nio.file.Files.createLink(input, source.toPath()); }
-            catch (IOException | UnsupportedOperationException failure) { java.nio.file.Files.copy(source.toPath(), input); }
+            // A hard link would allow a source edit to change makeblastdb's input midway.
+            java.nio.file.Files.copy(source.toPath(), input, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+            String indexedSourceDigest = BlastDatabase.digestSourceFile(input.toFile());
             biocjava.bioDoer.BLAST.ToolProcessRunner.Result completed = simplegenomehub.runtime.HubProcessRunner.run(session,
                 new ProcessBuilder(executable, "-in", input.getFileName().toString(),
                     "-dbtype", molecularType == BlastConfig.MolecularType.PROTEIN ? "prot" : "nucl",
                     "-out", name, "-blastdb_version", "4").directory(directory), 5, TimeUnit.MINUTES);
             if (completed.exitCode != 0) throw new IOException("makeblastdb failed: " + completed.output);
+            return indexedSourceDigest;
         } finally { java.nio.file.Files.deleteIfExists(input); }
     }
 
@@ -334,10 +339,7 @@ public class BlastDatabaseManager {
         // Check disk
         File dbDir = config.getSequenceTypeDbDir(species, seqType);
         BlastDatabase diskDb = loadDatabaseFromDisk(dbDir, seqType);
-        if (diskDb != null) {
-            File sourceFile = seqType.getSourceFile(species);
-            return diskDb.isUpToDate(sourceFile);
-        }
+        if (diskDb != null) return isValidAndUpToDate(diskDb, species, seqType);
         
         return false;
     }
@@ -347,8 +349,9 @@ public class BlastDatabaseManager {
      */
     public DatabaseStatus getDatabaseStatus(SpeciesInfo species, SequenceType seqType) {
         File sourceFile = seqType.getSourceFile(species);
+        if (!sourceFile.isFile()) sourceFile = findActualSourceFile(species, seqType);
         
-        if (!sourceFile.exists()) {
+        if (sourceFile == null || !sourceFile.isFile()) {
             return DatabaseStatus.SOURCE_MISSING;
         }
         

@@ -24,3 +24,14 @@ and publish complete files. Old published applications do not honor the new
 
 The parent repository contains the isolated regression harness, small scientific
 fixtures, the companion JJplot2 source patch and the final validation report.
+
+BLAST databases are built as v4 without requiring indexed sequence IDs, preserving
+long FASTA identifiers. Source SHA-256 binds ordinal mapping to the current data
+root; legacy caches without this evidence may be rebuilt once. Copying a root
+never falls back to a historical absolute source path. Tree building streams
+FASTA from the actual searched database with `blastdbcmd -entry all`, supporting
+unindexed, split-volume and older indexed databases. It retains selected hits in
+request order and rejects missing or ambiguous identifiers. Streaming stdout is
+separate from bounded stderr diagnostics; cancellation and parser errors wait
+for the process and reader threads to exit. The parent native regression runs
+the search, extraction, alignment, trimming and tree inference chain.
