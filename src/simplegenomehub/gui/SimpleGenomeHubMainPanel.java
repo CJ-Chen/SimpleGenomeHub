@@ -419,7 +419,10 @@ public class SimpleGenomeHubMainPanel extends JPanel implements SpeciesManager.S
                         SwingUtilities.invokeLater(() -> {
                             if (failure != null) JOptionPane.showMessageDialog(frame,
                                 failure.getMessage(), "Cannot close Hub", JOptionPane.ERROR_MESSAGE);
-                            else if (Boolean.TRUE.equals(closed)) frame.dispose();
+                            else if (Boolean.TRUE.equals(closed)) {
+                                frame.dispose();
+                                System.exit(0);
+                            }
                         }));
                 }
             });
