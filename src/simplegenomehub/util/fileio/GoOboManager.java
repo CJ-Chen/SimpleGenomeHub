@@ -191,18 +191,28 @@ public final class GoOboManager {
             Files.createDirectories(home.toPath());
             File staging = Files.createTempDirectory(home.toPath(), ".go-download-").toFile();
             GoOboProvider.downloadLatestOboAndThen(staging, parent, path -> {
-                if (session != null && !session.accepts(generation)) return;
                 if (!cacheAsGlobalDefault(new File(path), "tbtools_feijipan")) {
-                    javax.swing.JOptionPane.showMessageDialog(parent, "Failed to publish downloaded GO cache.",
+                    if (session == null || session.accepts(generation)) javax.swing.JOptionPane.showMessageDialog(parent, "Failed to publish downloaded GO cache.",
                         "Cache Error", javax.swing.JOptionPane.ERROR_MESSAGE);
                 }
             }, () -> {
-                try { deleteStaging(staging); if (onComplete != null && (session == null || session.accepts(generation))) onComplete.run(); }
-                finally { if (task != null) task.close(); }
+                completeDownload(staging, onComplete, task);
             });
         } catch (IOException | RuntimeException e) {
-            if (task != null) task.close();
-            javax.swing.JOptionPane.showMessageDialog(parent, "Failed to prepare GO download: " + e.getMessage());
+            try {
+                logger.log(java.util.logging.Level.WARNING, "Failed to prepare GO download", e);
+                if (session == null || session.accepts(generation))
+                    javax.swing.JOptionPane.showMessageDialog(parent, "Failed to prepare GO download: " + e.getMessage());
+            } finally { completeDownload(null, onComplete, task); }
+        }
+    }
+
+    /** Completion is control flow too: closing may suppress UI, never a background waiter's signal. */
+    static void completeDownload(File staging, Runnable onComplete, HubSession.Task task) {
+        try { if (staging != null) deleteStaging(staging); }
+        finally {
+            try { if (onComplete != null) onComplete.run(); }
+            finally { if (task != null) task.close(); }
         }
     }
 

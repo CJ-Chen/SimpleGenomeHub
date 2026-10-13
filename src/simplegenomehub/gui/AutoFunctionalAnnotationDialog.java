@@ -1,5 +1,7 @@
 package simplegenomehub.gui;
 
+import simplegenomehub.runtime.HubWorker;
+
 import biocjava.bioDoer.Eggnog.EggnogDbConstants;
 import biocjava.bioDoer.Kegg.KeggBackEndConstants;
 import simplegenomehub.config.SimpleGenomeHubConfig;
@@ -237,8 +239,8 @@ public class AutoFunctionalAnnotationDialog extends JDialog {
         persistSelections(parameters);
         final long generation = owningSession == null ? 0 : owningSession.getGeneration();
 
-        SwingWorker<AutoFunctionalAnnotationService.Result, String> worker =
-            new SwingWorker<AutoFunctionalAnnotationService.Result, String>() {
+        HubWorker<AutoFunctionalAnnotationService.Result, String> worker =
+            new HubWorker<AutoFunctionalAnnotationService.Result, String>() {
                 @Override
                 protected AutoFunctionalAnnotationService.Result doInBackground() throws Exception {
                     runningThread = Thread.currentThread();
@@ -261,34 +263,40 @@ public class AutoFunctionalAnnotationDialog extends JDialog {
 
                 @Override
                 protected void done() {
-                    running = false;
-                    cancelButton.setText("Close");
-                    progressBar.setVisible(false);
-                    progressBar.setIndeterminate(false);
-                    if (closeAfterRun) { dispose(); return; }
-                    if (owningSession != null && !owningSession.accepts(generation)) return;
-                    runButton.setEnabled(true);
                     try {
-                        AutoFunctionalAnnotationService.Result result = get();
-                        StringBuilder summary = new StringBuilder();
-                        summary.append("Auto annotation completed.\n");
-                        summary.append("Raw outputs: ").append(result.getRawOutputDir().getAbsolutePath()).append("\n");
-                        for (Map.Entry<GeneAnnotationData.AnnotationType, Integer> entry : result.getImportedCounts().entrySet()) {
-                            if (entry.getValue() != null && entry.getValue() > 0) {
-                                summary.append(entry.getKey().getShortName())
-                                    .append(": ")
-                                    .append(entry.getValue())
-                                    .append("\n");
+                        if (!isPresentationCurrent()) return;
+                        if (closeAfterRun) { dispose(); return; }
+                        if (owningSession != null && !owningSession.accepts(generation)) return;
+
+                        try {
+                            AutoFunctionalAnnotationService.Result result = get();
+                            StringBuilder summary = new StringBuilder();
+                            summary.append("Auto annotation completed.\n");
+                            summary.append("Raw outputs: ").append(result.getRawOutputDir().getAbsolutePath()).append("\n");
+                            for (Map.Entry<GeneAnnotationData.AnnotationType, Integer> entry : result.getImportedCounts().entrySet()) {
+                                if (entry.getValue() != null && entry.getValue() > 0) {
+                                    summary.append(entry.getKey().getShortName())
+                                        .append(": ")
+                                        .append(entry.getValue())
+                                        .append("\n");
+                                }
                             }
+                            appendStatus(summary.toString());
+                            JOptionPane.showMessageDialog(AutoFunctionalAnnotationDialog.this,
+                                summary.toString(), "Auto annotation complete", JOptionPane.INFORMATION_MESSAGE);
+                            dispose();
+                        } catch (Exception ex) {
+                            appendStatus("FAILED: " + ex.getMessage());
+                            JOptionPane.showMessageDialog(AutoFunctionalAnnotationDialog.this,
+                                ex.getMessage(), "Auto annotation failed", JOptionPane.ERROR_MESSAGE);
                         }
-                        appendStatus(summary.toString());
-                        JOptionPane.showMessageDialog(AutoFunctionalAnnotationDialog.this,
-                            summary.toString(), "Auto annotation complete", JOptionPane.INFORMATION_MESSAGE);
-                        dispose();
-                    } catch (Exception ex) {
-                        appendStatus("FAILED: " + ex.getMessage());
-                        JOptionPane.showMessageDialog(AutoFunctionalAnnotationDialog.this,
-                            ex.getMessage(), "Auto annotation failed", JOptionPane.ERROR_MESSAGE);
+                    } finally {
+                        running = false;
+                        cancelButton.setText("Close");
+                        progressBar.setVisible(false);
+                        progressBar.setIndeterminate(false);
+                        runButton.setEnabled(isPresentationCurrent());
+                        if (closeAfterRun) dispose();
                     }
                 }
             };

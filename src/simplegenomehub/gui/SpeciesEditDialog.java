@@ -3,6 +3,8 @@
  */
 package simplegenomehub.gui;
 
+import simplegenomehub.runtime.HubWorker;
+
 import simplegenomehub.model.SpeciesInfo;
 import simplegenomehub.model.SpeciesManager;
 import simplegenomehub.model.GenomeData;
@@ -437,7 +439,7 @@ public class SpeciesEditDialog extends JDialog {
         progressDialog.setLocationRelativeTo(this);
         
         // Update caches in background
-        SwingWorker<Boolean, String> worker = new SwingWorker<Boolean, String>() {
+        HubWorker<Boolean, String> worker = new HubWorker<Boolean, String>() {
             @Override
             protected Boolean doInBackground() throws Exception {
                 publish("Detected annotation format: " + formatType);
@@ -567,26 +569,29 @@ public class SpeciesEditDialog extends JDialog {
             
             @Override
             protected void done() {
-                progressDialog.dispose();
-                
                 try {
-                    Boolean success = get();
-                    if (success) {
-                        updateStatisticsDisplay();
-                        
+                    if (!isPresentationCurrent()) return;
+                    try {
+                        Boolean success = get();
+                        if (success) {
+                            updateStatisticsDisplay();
+
+                            JOptionPane.showMessageDialog(SpeciesEditDialog.this,
+                                "Caches updated successfully!\n" +
+                                "Statistics recalculated and both representative and complete sequence files generated using TBtools.\n\n" +
+                                "Files generated:\n" +
+                                "- Representative sequences: .transcripts.fasta, .cds.fasta, .proteins.fasta\n" +
+                                "- Complete sequences: .all_transcripts.fasta, .all_cds.fasta, .all_proteins.fasta",
+                                "Update Complete", JOptionPane.INFORMATION_MESSAGE);
+                        }
+                    } catch (Exception e) {
+                        logger.log(Level.WARNING, "Cache update failed", e);
                         JOptionPane.showMessageDialog(SpeciesEditDialog.this,
-                            "Caches updated successfully!\n" +
-                            "Statistics recalculated and both representative and complete sequence files generated using TBtools.\n\n" +
-                            "Files generated:\n" +
-                            "- Representative sequences: .transcripts.fasta, .cds.fasta, .proteins.fasta\n" +
-                            "- Complete sequences: .all_transcripts.fasta, .all_cds.fasta, .all_proteins.fasta",
-                            "Update Complete", JOptionPane.INFORMATION_MESSAGE);
+                            "Failed to update caches: " + e.getMessage(),
+                            "Update Failed", JOptionPane.ERROR_MESSAGE);
                     }
-                } catch (Exception e) {
-                    logger.log(Level.WARNING, "Cache update failed", e);
-                    JOptionPane.showMessageDialog(SpeciesEditDialog.this,
-                        "Failed to update caches: " + e.getMessage(),
-                        "Update Failed", JOptionPane.ERROR_MESSAGE);
+                } finally {
+                    progressDialog.dispose();
                 }
             }
         };

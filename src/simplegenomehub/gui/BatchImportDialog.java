@@ -3,6 +3,8 @@
  */
 package simplegenomehub.gui;
 
+import simplegenomehub.runtime.HubWorker;
+
 import simplegenomehub.model.SpeciesManager;
 import simplegenomehub.model.SpeciesInfo;
 import simplegenomehub.model.GenomeData;
@@ -378,7 +380,7 @@ public class BatchImportDialog extends JDialog {
         
         updateStatus("Scanning directories...");
         
-        SwingWorker<Void, String> worker = new SwingWorker<Void, String>() {
+        HubWorker<Void, String> worker = new HubWorker<Void, String>() {
             @Override
             protected Void doInBackground() throws Exception {
                 for (ImportEntry entry : importEntries) {
@@ -397,6 +399,7 @@ public class BatchImportDialog extends JDialog {
             
             @Override
             protected void done() {
+                if (!isPresentationCurrent()) return;
                 tableModel.fireTableDataChanged();
                 updateStatus("Directory scan completed");
             }
@@ -463,7 +466,7 @@ public class BatchImportDialog extends JDialog {
         updateStatus("Starting batch import...");
         progressBar.setValue(0);
         
-        SwingWorker<Boolean, String> worker = new SwingWorker<Boolean, String>() {
+        HubWorker<Boolean, String> worker = new HubWorker<Boolean, String>() {
             @Override
             protected Boolean doInBackground() throws Exception {
                 try {
@@ -505,19 +508,22 @@ public class BatchImportDialog extends JDialog {
             @Override
             protected void done() {
                 try {
-                    boolean success = get();
-                    if (success) {
-                        updateStatus("Batch import completed successfully");
-                        JOptionPane.showMessageDialog(BatchImportDialog.this,
-                            "Batch import completed successfully!",
-                            "Import Complete", JOptionPane.INFORMATION_MESSAGE);
-                    } else {
-                        updateStatus("Batch import completed with errors");
+                    if (!isPresentationCurrent()) return;
+                    try {
+                        boolean success = get();
+                        if (success) {
+                            updateStatus("Batch import completed successfully");
+                            JOptionPane.showMessageDialog(BatchImportDialog.this,
+                                "Batch import completed successfully!",
+                                "Import Complete", JOptionPane.INFORMATION_MESSAGE);
+                        } else {
+                            updateStatus("Batch import completed with errors");
+                        }
+                    } catch (Exception e) {
+                        updateStatus("Batch import failed: " + e.getMessage());
                     }
-                } catch (Exception e) {
-                    updateStatus("Batch import failed: " + e.getMessage());
                 } finally {
-                    setControlsEnabled(true);
+                    setControlsEnabled(isPresentationCurrent());
                     progressBar.setValue(0);
                     progressBar.setString("");
                 }

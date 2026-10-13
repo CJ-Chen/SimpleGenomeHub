@@ -4,6 +4,8 @@
  */
 package simplegenomehub.gui;
 
+import simplegenomehub.runtime.HubWorker;
+
 import simplegenomehub.config.SimpleGenomeHubConfig;
 import simplegenomehub.model.SpeciesInfo;
 import simplegenomehub.model.GeneAnnotationData;
@@ -825,7 +827,7 @@ public class KEGGEnrichmentDialog extends JDialog {
         }
         
         // Run analysis in background thread
-        SwingWorker<List<EnhancedEnrichmentResult>, String> worker = new SwingWorker<List<EnhancedEnrichmentResult>, String>() {
+        HubWorker<List<EnhancedEnrichmentResult>, String> worker = new HubWorker<List<EnhancedEnrichmentResult>, String>() {
             @Override
             protected List<EnhancedEnrichmentResult> doInBackground() throws Exception {
                 publish("Initializing KEGG enrichment analysis...");
@@ -847,53 +849,57 @@ public class KEGGEnrichmentDialog extends JDialog {
             @Override
             protected void done() {
                 try {
-                    List<EnhancedEnrichmentResult> results = get();
-                    
-                    System.out.println("=== UI UPDATE: Received " + results.size() + " enrichment results ===");
-                    
-                    // Clear old results first
-                    tableModel.setResults(new ArrayList<>());
-                    
-                    // Update table with new results
-                    tableModel.setResults(results);
-                    
-                    // Force table to repaint
-                    SwingUtilities.invokeLater(() -> {
-                        resultsTable.revalidate();
-                        resultsTable.repaint();
-                    });
-                    
-                    progressBar.setVisible(false);
-                    runAnalysisButton.setEnabled(true);
-                    exportButton.setEnabled(!results.isEmpty());
-                    visualizeButton.setEnabled(!results.isEmpty());
-                    clearButton.setEnabled(!results.isEmpty());
-                    
-                    if (results.isEmpty()) {
-                        statusLabel.setText("No significant enrichment found with current parameters");
-                        System.out.println("=== UI UPDATE: No significant results ===");
-                    } else {
-                        statusLabel.setText(String.format("Analysis complete: %d significant terms found", results.size()));
-                        System.out.println("=== UI UPDATE: " + results.size() + " significant terms found ===");
-                        
-                        // Print first few results for verification
-                        for (int i = 0; i < Math.min(3, results.size()); i++) {
-                            EnhancedEnrichmentResult result = results.get(i);
-                            System.out.println("  " + (i+1) + ". " + result.getTermName() + 
-                                             " (p=" + String.format("%.6f", result.getPValue()) + 
-                                             ", genes=" + result.getGeneCount() + ")");
+                    if (!isPresentationCurrent()) return;
+                    try {
+                        List<EnhancedEnrichmentResult> results = get();
+
+                        System.out.println("=== UI UPDATE: Received " + results.size() + " enrichment results ===");
+
+                        // Clear old results first
+                        tableModel.setResults(new ArrayList<>());
+
+                        // Update table with new results
+                        tableModel.setResults(results);
+
+                        // Force table to repaint
+                        postToEdt(() -> {
+                            if (!isPresentationCurrent()) return;
+                            resultsTable.revalidate();
+                            resultsTable.repaint();
+                        });
+
+                        exportButton.setEnabled(!results.isEmpty());
+                        visualizeButton.setEnabled(!results.isEmpty());
+                        clearButton.setEnabled(!results.isEmpty());
+
+                        if (results.isEmpty()) {
+                            statusLabel.setText("No significant enrichment found with current parameters");
+                            System.out.println("=== UI UPDATE: No significant results ===");
+                        } else {
+                            statusLabel.setText(String.format("Analysis complete: %d significant terms found", results.size()));
+                            System.out.println("=== UI UPDATE: " + results.size() + " significant terms found ===");
+
+                            // Print first few results for verification
+                            for (int i = 0; i < Math.min(3, results.size()); i++) {
+                                EnhancedEnrichmentResult result = results.get(i);
+                                System.out.println("  " + (i+1) + ". " + result.getTermName() +
+                                                 " (p=" + String.format("%.6f", result.getPValue()) +
+                                                 ", genes=" + result.getGeneCount() + ")");
+                            }
                         }
+
+                    } catch (Exception e) {
+
+                        clearButton.setEnabled(!tableModel.getResults().isEmpty());
+                        statusLabel.setText("Error: " + e.getMessage());
+
+                        JOptionPane.showMessageDialog(KEGGEnrichmentDialog.this,
+                            "Analysis failed: " + e.getMessage(),
+                            "Analysis Error", JOptionPane.ERROR_MESSAGE);
                     }
-                    
-                } catch (Exception e) {
+                } finally {
                     progressBar.setVisible(false);
-                    runAnalysisButton.setEnabled(true);
-                    clearButton.setEnabled(!tableModel.getResults().isEmpty());
-                    statusLabel.setText("Error: " + e.getMessage());
-                    
-                    JOptionPane.showMessageDialog(KEGGEnrichmentDialog.this,
-                        "Analysis failed: " + e.getMessage(),
-                        "Analysis Error", JOptionPane.ERROR_MESSAGE);
+                    runAnalysisButton.setEnabled(isPresentationCurrent());
                 }
             }
         };
@@ -1707,8 +1713,8 @@ public class KEGGEnrichmentDialog extends JDialog {
         statusLabel.setText("Importing " + GeneSetFileSupport.extractDisplayName(selectedFile) + "...");
         statusLabel.setForeground(Color.BLUE);
 
-        SwingWorker<GeneSetImportSupport.ImportedGeneSet, Void> worker =
-            new SwingWorker<GeneSetImportSupport.ImportedGeneSet, Void>() {
+        HubWorker<GeneSetImportSupport.ImportedGeneSet, Void> worker =
+            new HubWorker<GeneSetImportSupport.ImportedGeneSet, Void>() {
                 @Override
                 protected GeneSetImportSupport.ImportedGeneSet doInBackground() throws Exception {
                     return GeneSetImportSupport.importIds(targetSpecies, selectedFile, GeneSetImportSupport.OutputIdType.GENE);
@@ -1716,36 +1722,39 @@ public class KEGGEnrichmentDialog extends JDialog {
 
                 @Override
                 protected void done() {
-                    importGeneSetComboBox.setEnabled(!availableGeneSetFiles.isEmpty());
-                    importGeneSetComboBox.setSelectedIndex(0);
-
                     try {
-                        GeneSetImportSupport.ImportedGeneSet importedGeneSet = get();
-                        List<String> importedIds = importedGeneSet.getIds();
-                        geneListTextArea.setText(String.join("\n", importedIds));
-                        geneListTextArea.setCaretPosition(0);
-                        statusLabel.setText("Imported " + importedIds.size() + " gene IDs from "
-                            + (importedGeneSet.getSetKind() == GeneSetFileSupport.SetKind.REGION ? "Region Set" : "Gene Set"));
-                        statusLabel.setForeground(Color.BLUE);
-                    } catch (Exception ex) {
-                        Throwable cause = ex instanceof java.util.concurrent.ExecutionException && ex.getCause() != null
-                            ? ex.getCause()
-                            : ex;
+                        if (!isPresentationCurrent()) return;
+                        try {
+                            GeneSetImportSupport.ImportedGeneSet importedGeneSet = get();
+                            List<String> importedIds = importedGeneSet.getIds();
+                            geneListTextArea.setText(String.join("\n", importedIds));
+                            geneListTextArea.setCaretPosition(0);
+                            statusLabel.setText("Imported " + importedIds.size() + " gene IDs from "
+                                + (importedGeneSet.getSetKind() == GeneSetFileSupport.SetKind.REGION ? "Region Set" : "Gene Set"));
+                            statusLabel.setForeground(Color.BLUE);
+                        } catch (Exception ex) {
+                            Throwable cause = ex instanceof java.util.concurrent.ExecutionException && ex.getCause() != null
+                                ? ex.getCause()
+                                : ex;
 
-                        String message = cause.getMessage() != null ? cause.getMessage() : "Unknown error";
-                        statusLabel.setText("Import failed");
-                        statusLabel.setForeground(Color.RED);
+                            String message = cause.getMessage() != null ? cause.getMessage() : "Unknown error";
+                            statusLabel.setText("Import failed");
+                            statusLabel.setForeground(Color.RED);
 
-                        int messageType = cause instanceof GeneSetImportSupport.NoGeneFoundException
-                            ? JOptionPane.INFORMATION_MESSAGE
-                            : JOptionPane.ERROR_MESSAGE;
+                            int messageType = cause instanceof GeneSetImportSupport.NoGeneFoundException
+                                ? JOptionPane.INFORMATION_MESSAGE
+                                : JOptionPane.ERROR_MESSAGE;
 
-                        JOptionPane.showMessageDialog(
-                            KEGGEnrichmentDialog.this,
-                            "Failed to import selected set:\n" + message,
-                            "Import Gene Set Failed",
-                            messageType
-                        );
+                            JOptionPane.showMessageDialog(
+                                KEGGEnrichmentDialog.this,
+                                "Failed to import selected set:\n" + message,
+                                "Import Gene Set Failed",
+                                messageType
+                            );
+                        }
+                    } finally {
+                        importGeneSetComboBox.setEnabled(isPresentationCurrent() && !availableGeneSetFiles.isEmpty());
+                        importGeneSetComboBox.setSelectedIndex(0);
                     }
                 }
             };

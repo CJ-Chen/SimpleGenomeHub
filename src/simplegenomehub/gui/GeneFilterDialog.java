@@ -4,6 +4,8 @@
  */
 package simplegenomehub.gui;
 
+import simplegenomehub.runtime.HubWorker;
+
 import simplegenomehub.model.ExpressionMatrix;
 import simplegenomehub.model.SpeciesInfo;
 import simplegenomehub.gui.components.ExpressionDataTable;
@@ -627,8 +629,8 @@ public class GeneFilterDialog extends JDialog {
         importGeneSetComboBox.setEnabled(false);
         statusLabel.setText("Importing " + GeneSetFileSupport.extractDisplayName(selectedFile) + "...");
 
-        SwingWorker<GeneSetImportSupport.ImportedGeneSet, Void> worker =
-            new SwingWorker<GeneSetImportSupport.ImportedGeneSet, Void>() {
+        HubWorker<GeneSetImportSupport.ImportedGeneSet, Void> worker =
+            new HubWorker<GeneSetImportSupport.ImportedGeneSet, Void>() {
                 @Override
                 protected GeneSetImportSupport.ImportedGeneSet doInBackground() throws Exception {
                     return GeneSetImportSupport.importIds(species, selectedFile, GeneSetImportSupport.OutputIdType.TRANSCRIPT);
@@ -636,39 +638,42 @@ public class GeneFilterDialog extends JDialog {
 
                 @Override
                 protected void done() {
-                    importGeneSetComboBox.setEnabled(!availableGeneSetFiles.isEmpty());
-                    importGeneSetComboBox.setSelectedIndex(0);
-
                     try {
-                        GeneSetImportSupport.ImportedGeneSet importedGeneSet = get();
-                        List<String> importedIds = importedGeneSet.getIds();
-                        geneListArea.setText(String.join("\n", importedIds));
-                        geneListArea.setCaretPosition(0);
+                        if (!isPresentationCurrent()) return;
+                        try {
+                            GeneSetImportSupport.ImportedGeneSet importedGeneSet = get();
+                            List<String> importedIds = importedGeneSet.getIds();
+                            geneListArea.setText(String.join("\n", importedIds));
+                            geneListArea.setCaretPosition(0);
 
-                        String sourceType = importedGeneSet.getSetKind() == GeneSetFileSupport.SetKind.REGION
-                            ? "Region Set"
-                            : "Gene Set";
-                        statusLabel.setText("Imported " + importedIds.size() + " "
-                            + importedGeneSet.getOutputIdType().getDisplayName().toLowerCase()
-                            + "s from " + sourceType);
-                    } catch (Exception ex) {
-                        Throwable cause = ex instanceof java.util.concurrent.ExecutionException && ex.getCause() != null
-                            ? ex.getCause()
-                            : ex;
+                            String sourceType = importedGeneSet.getSetKind() == GeneSetFileSupport.SetKind.REGION
+                                ? "Region Set"
+                                : "Gene Set";
+                            statusLabel.setText("Imported " + importedIds.size() + " "
+                                + importedGeneSet.getOutputIdType().getDisplayName().toLowerCase()
+                                + "s from " + sourceType);
+                        } catch (Exception ex) {
+                            Throwable cause = ex instanceof java.util.concurrent.ExecutionException && ex.getCause() != null
+                                ? ex.getCause()
+                                : ex;
 
-                        String message = cause.getMessage() != null ? cause.getMessage() : "Unknown error";
-                        statusLabel.setText("Import failed");
+                            String message = cause.getMessage() != null ? cause.getMessage() : "Unknown error";
+                            statusLabel.setText("Import failed");
 
-                        int messageType = cause instanceof GeneSetImportSupport.NoGeneFoundException
-                            ? JOptionPane.INFORMATION_MESSAGE
-                            : JOptionPane.ERROR_MESSAGE;
+                            int messageType = cause instanceof GeneSetImportSupport.NoGeneFoundException
+                                ? JOptionPane.INFORMATION_MESSAGE
+                                : JOptionPane.ERROR_MESSAGE;
 
-                        JOptionPane.showMessageDialog(
-                            GeneFilterDialog.this,
-                            "Failed to import selected set:\n" + message,
-                            "Import Gene Set Failed",
-                            messageType
-                        );
+                            JOptionPane.showMessageDialog(
+                                GeneFilterDialog.this,
+                                "Failed to import selected set:\n" + message,
+                                "Import Gene Set Failed",
+                                messageType
+                            );
+                        }
+                    } finally {
+                        importGeneSetComboBox.setEnabled(isPresentationCurrent() && !availableGeneSetFiles.isEmpty());
+                        importGeneSetComboBox.setSelectedIndex(0);
                     }
                 }
             };

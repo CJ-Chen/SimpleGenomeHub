@@ -3,6 +3,8 @@
  */
 package simplegenomehub.gui;
 
+import simplegenomehub.runtime.HubWorker;
+
 import simplegenomehub.model.*;
 import simplegenomehub.model.ExpressionMatrix.DataType;
 
@@ -34,7 +36,7 @@ public class SimpleExpressionImportDialog extends JDialog {
     private SpeciesInfo targetSpecies;
     private ExpressionExperiment currentExperiment;
     private ExpressionMatrix previewMatrix;
-    private boolean importSuccessful = false;
+    private volatile boolean importSuccessful = false;
     
     // UI Components
     private JTextField filePathField;
@@ -454,7 +456,7 @@ public class SimpleExpressionImportDialog extends JDialog {
         repaint();
         
         // Perform import in background
-        SwingWorker<Boolean, String> importWorker = new SwingWorker<Boolean, String>() {
+        HubWorker<Boolean, String> importWorker = new HubWorker<Boolean, String>() {
             @Override
             protected Boolean doInBackground() throws Exception {
                 publish("Creating experiment...");
@@ -493,13 +495,15 @@ public class SimpleExpressionImportDialog extends JDialog {
                 
                 // Save metadata
                 File metadataFile = new File(expressionDir, experimentId + ".metadata.json");
-                currentExperiment.saveMetadata(metadataFile);
+                if (!currentExperiment.saveMetadata(metadataFile))
+                    throw new java.io.IOException("Failed to save expression metadata: " + metadataFile);
                 
                 progressBar.setValue(80);
                 
                 // Copy matrix file
                 File targetMatrixFile = new File(expressionDir, experimentId + ".matrix.tsv");
-                finalMatrix.saveToFile(targetMatrixFile);
+                if (!finalMatrix.saveToFile(targetMatrixFile))
+                    throw new java.io.IOException("Failed to save expression matrix: " + targetMatrixFile);
                 
                 // Add to species
                 targetSpecies.addExpressionExperiment(currentExperiment);
@@ -517,9 +521,10 @@ public class SimpleExpressionImportDialog extends JDialog {
                 summary.append("- File: ").append(sourceFile.getName()).append("\n");
                 summary.append("- Saved to: ").append(expressionDir.getAbsolutePath()).append("\n");
                 
-                SwingUtilities.invokeLater(() -> summaryArea.setText(summary.toString()));
+                postToEdt(() -> { if (isPresentationCurrent()) summaryArea.setText(summary.toString()); });
                 
                 Thread.sleep(1000);
+                importSuccessful = true;
                 return true;
             }
             
@@ -533,27 +538,34 @@ public class SimpleExpressionImportDialog extends JDialog {
             @Override
             protected void done() {
                 try {
-                    importSuccessful = get();
-                    if (importSuccessful) {
+                    if (!isPresentationCurrent()) return;
+                    try {
+                        importSuccessful = get();
+                        if (importSuccessful) {
+                            JOptionPane.showMessageDialog(SimpleExpressionImportDialog.this,
+                                "Expression data imported successfully!\n" +
+                                "You can now use 'Explore Expression Data' to view the data.",
+                                "Import Complete", JOptionPane.INFORMATION_MESSAGE);
+                            dispose();
+                        } else {
+                            JOptionPane.showMessageDialog(SimpleExpressionImportDialog.this,
+                                "Failed to import expression data. Please check the file format.",
+                                "Import Failed", JOptionPane.ERROR_MESSAGE);
+                            progressBar.setString("Import failed");
+
+                        }
+                    } catch (Exception e) {
+                        logger.warning("Import error: " + e.getMessage());
                         JOptionPane.showMessageDialog(SimpleExpressionImportDialog.this,
-                            "Expression data imported successfully!\n" +
-                            "You can now use 'Explore Expression Data' to view the data.",
-                            "Import Complete", JOptionPane.INFORMATION_MESSAGE);
-                        dispose();
-                    } else {
-                        JOptionPane.showMessageDialog(SimpleExpressionImportDialog.this,
-                            "Failed to import expression data. Please check the file format.",
-                            "Import Failed", JOptionPane.ERROR_MESSAGE);
-                        progressBar.setString("Import failed");
-                        importButton.setEnabled(true);
+                            "Import error: " + e.getMessage(),
+                            "Import Error", JOptionPane.ERROR_MESSAGE);
+                        progressBar.setString("Import error");
+
                     }
-                } catch (Exception e) {
-                    logger.warning("Import error: " + e.getMessage());
-                    JOptionPane.showMessageDialog(SimpleExpressionImportDialog.this,
-                        "Import error: " + e.getMessage(),
-                        "Import Error", JOptionPane.ERROR_MESSAGE);
-                    progressBar.setString("Import error");
-                    importButton.setEnabled(true);
+                } finally {
+                    progressBar.setVisible(false);
+                    progressBar.setIndeterminate(false);
+                    importButton.setEnabled(isPresentationCurrent());
                 }
             }
         };

@@ -1,5 +1,7 @@
 package simplegenomehub.gui;
 
+import simplegenomehub.runtime.HubWorker;
+
 import biocjava.bioIO.FastX.Fasta;
 import biocjava.bioIO.FastX.FastaIndex.MakeFastaIndex;
 import biocjava.bioIO.FastX.FastaIndex.SeqExtracterAccordingFAindex;
@@ -393,7 +395,7 @@ public class ChromosomeRegionExtractorDialog extends JDialog {
         statusLabel.setText("Processing chromosome regions...");
         
         // Perform extraction in background thread
-        SwingWorker<String, String> worker = new SwingWorker<String, String>() {
+        HubWorker<String, String> worker = new HubWorker<String, String>() {
             @Override
             protected String doInBackground() throws Exception {
                 publish("Initializing sequence extractor...");
@@ -525,33 +527,36 @@ public class ChromosomeRegionExtractorDialog extends JDialog {
             @Override
             protected void done() {
                 try {
-                    String extractedContent = get();
-                    progressBar.setIndeterminate(false);
-                    outputTextArea.setText(extractedContent);
-                    outputTextArea.setCaretPosition(0);
-                    progressBar.setValue(100);
-                    progressBar.setString("Extraction completed");
-                    if (outputPath.isEmpty()) {
-                        statusLabel.setText("Sequences extracted successfully to Output");
+                    if (!isPresentationCurrent()) return;
+                    try {
+                        String extractedContent = get();
+                        progressBar.setIndeterminate(false);
+                        outputTextArea.setText(extractedContent);
+                        outputTextArea.setCaretPosition(0);
+                        progressBar.setValue(100);
+                        progressBar.setString("Extraction completed");
+                        if (outputPath.isEmpty()) {
+                            statusLabel.setText("Sequences extracted successfully to Output");
+                            JOptionPane.showMessageDialog(ChromosomeRegionExtractorDialog.this,
+                                "Chromosome region sequences extracted successfully!",
+                                "Extraction Complete", JOptionPane.INFORMATION_MESSAGE);
+                        } else {
+                            statusLabel.setText("Sequences extracted successfully to: " + outputPath);
+                            JOptionPane.showMessageDialog(ChromosomeRegionExtractorDialog.this,
+                                "Chromosome region sequences extracted successfully!",
+                                "Extraction Complete", JOptionPane.INFORMATION_MESSAGE);
+                        }
+                    } catch (Exception ex) {
+                        progressBar.setIndeterminate(false);
+                        progressBar.setValue(0);
+                        progressBar.setString("Error occurred");
+                        statusLabel.setText("Error: " + ex.getMessage());
                         JOptionPane.showMessageDialog(ChromosomeRegionExtractorDialog.this,
-                            "Chromosome region sequences extracted successfully!",
-                            "Extraction Complete", JOptionPane.INFORMATION_MESSAGE);
-                    } else {
-                        statusLabel.setText("Sequences extracted successfully to: " + outputPath);
-                        JOptionPane.showMessageDialog(ChromosomeRegionExtractorDialog.this,
-                            "Chromosome region sequences extracted successfully!",
-                            "Extraction Complete", JOptionPane.INFORMATION_MESSAGE);
+                            "Error during extraction: " + ex.getMessage(),
+                            "Extraction Error", JOptionPane.ERROR_MESSAGE);
                     }
-                } catch (Exception ex) {
-                    progressBar.setIndeterminate(false);
-                    progressBar.setValue(0);
-                    progressBar.setString("Error occurred");
-                    statusLabel.setText("Error: " + ex.getMessage());
-                    JOptionPane.showMessageDialog(ChromosomeRegionExtractorDialog.this,
-                        "Error during extraction: " + ex.getMessage(),
-                        "Extraction Error", JOptionPane.ERROR_MESSAGE);
                 } finally {
-                    extractButton.setEnabled(true);
+                    extractButton.setEnabled(isPresentationCurrent());
                 }
             }
         };

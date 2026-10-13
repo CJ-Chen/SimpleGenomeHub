@@ -4,6 +4,8 @@
  */
 package simplegenomehub.gui;
 
+import simplegenomehub.runtime.HubWorker;
+
 import biocjava.bioDoer.MEME.DrawMotifPattern.DrawGeneStructureFromGXFfile;
 import jigplot.engine.JIGBasePanel;
 import jigplot.engine.JIGSubPanel;
@@ -371,7 +373,7 @@ public class GeneInfoViewerDialog extends JDialog {
         annotationPanel.showLoadingState(geneId);
 
         // Perform the fast search in background thread
-        SwingWorker<GeneSearchResult, Void> worker = new SwingWorker<GeneSearchResult, Void>() {
+        HubWorker<GeneSearchResult, Void> worker = new HubWorker<GeneSearchResult, Void>() {
             @Override
             protected GeneSearchResult doInBackground() throws Exception {
                 return dataRetriever.searchGeneCore(searchedGeneId, searchSpecies);
@@ -380,14 +382,17 @@ public class GeneInfoViewerDialog extends JDialog {
             @Override
             protected void done() {
                 try {
-                    GeneSearchResult result = get();
-                    if (generation != searchGeneration.get()) {
-                        return;
+                    if (!isPresentationCurrent()) return;
+                    try {
+                        GeneSearchResult result = get();
+                        if (generation != searchGeneration.get()) {
+                            return;
+                        }
+                        handleCoreSearchResult(generation, searchedGeneId, searchSpecies, result);
+                    } catch (Exception e) {
+                        logger.severe("Gene search failed: " + e.getMessage());
+                        handleSearchError(searchedGeneId, e);
                     }
-                    handleCoreSearchResult(generation, searchedGeneId, searchSpecies, result);
-                } catch (Exception e) {
-                    logger.severe("Gene search failed: " + e.getMessage());
-                    handleSearchError(searchedGeneId, e);
                 } finally {
                     setSearchEnabled(true);
                 }
@@ -447,8 +452,8 @@ public class GeneInfoViewerDialog extends JDialog {
     }
 
     private void startAnnotationLoad(long generation, String searchedGeneId, SpeciesInfo searchSpecies, GeneSearchResult coreResult) {
-        SwingWorker<List<GeneAnnotationData.GeneAnnotation>, Void> annotationWorker =
-            new SwingWorker<List<GeneAnnotationData.GeneAnnotation>, Void>() {
+        HubWorker<List<GeneAnnotationData.GeneAnnotation>, Void> annotationWorker =
+            new HubWorker<List<GeneAnnotationData.GeneAnnotation>, Void>() {
                 @Override
                 protected List<GeneAnnotationData.GeneAnnotation> doInBackground() {
                     return dataRetriever.getGeneAnnotations(coreResult.getResolvedGeneId(), searchSpecies);
@@ -456,6 +461,7 @@ public class GeneInfoViewerDialog extends JDialog {
 
                 @Override
                 protected void done() {
+                    if (!isPresentationCurrent()) return;
                     if (generation != searchGeneration.get()) {
                         return;
                     }

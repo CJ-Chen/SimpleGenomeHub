@@ -126,10 +126,9 @@ public class BlastDatabase {
      * Check if all required database files exist
      */
     private boolean hasRequiredFiles() {
-        String[] extensions = molecularType.getRequiredExtensions();
-        
-        for (String ext : extensions) {
-            File dbFile = new File(databaseDir, databaseName + ext);
+        java.util.List<File> required = requiredFiles();
+        if (required.isEmpty()) return false;
+        for (File dbFile : required) {
             if (!dbFile.exists() || dbFile.length() == 0) {
                 logger.warning("Missing database file: " + dbFile.getAbsolutePath());
                 return false;
@@ -137,28 +136,52 @@ public class BlastDatabase {
         }
         return true;
     }
+
+    /** v4 databases larger than makeblastdb's volume limit use .00/.01 indexes plus an alias. */
+    private java.util.List<File> requiredFiles() {
+        java.util.List<File> files = new java.util.ArrayList<>();
+        String[] extensions = molecularType.getRequiredExtensions();
+        File alias = new File(databaseDir, databaseName + (molecularType == MolecularType.PROTEIN ? ".pal" : ".nal"));
+        if (!alias.exists() && new File(databaseDir, databaseName + extensions[0]).isFile()) {
+            for (String extension : extensions) files.add(new File(databaseDir, databaseName + extension));
+            return files;
+        }
+        if (!alias.isFile() || alias.length() == 0) return files;
+        // The alias is authoritative: enumerating existing volumes would miss a
+        // completely deleted final volume and incorrectly accept a partial DB.
+        try {
+            int expected = 0;
+            for (String line : java.nio.file.Files.readAllLines(alias.toPath())) {
+                String trimmed = line.trim();
+                if (!trimmed.matches("DBLIST\\s+.*")) continue;
+                java.util.regex.Matcher tokens = java.util.regex.Pattern.compile("\"([^\"]+)\"|(\\S+)")
+                    .matcher(trimmed.substring(6));
+                while (tokens.find()) {
+                    String prefix = tokens.group(1) == null ? tokens.group(2) : tokens.group(1);
+                    if (!prefix.matches(java.util.regex.Pattern.quote(databaseName) + "\\.[0-9]+")
+                            || Integer.parseInt(prefix.substring(databaseName.length() + 1)) != expected++)
+                        return java.util.Collections.emptyList();
+                    for (String extension : extensions) files.add(new File(databaseDir, prefix + extension));
+                }
+            }
+            if (expected == 0) return java.util.Collections.emptyList();
+        } catch (IOException | NumberFormatException failure) {
+            logger.warning("Cannot read BLAST database volumes: " + alias + ": " + failure.getMessage());
+            return java.util.Collections.emptyList();
+        }
+        return files;
+    }
     
     /**
      * Check if database files are corrupted
      */
     private boolean isCorrupted() {
         // Basic corruption check - ensure files have reasonable sizes
-        String[] extensions = molecularType.getRequiredExtensions();
-        
-        for (String ext : extensions) {
-            File dbFile = new File(databaseDir, databaseName + ext);
+        for (File dbFile : requiredFiles()) {
             if (dbFile.exists() && dbFile.length() < 10) {
                 logger.warning("Database file may be corrupted (file too small): " + dbFile.getAbsolutePath());
                 return true;
             }
-        }
-        
-        // Check if .nin/.pin file exists (index file)
-        String indexExt = molecularType == MolecularType.NUCLEOTIDE ? ".nin" : ".pin";
-        File indexFile = new File(databaseDir, databaseName + indexExt);
-        if (!indexFile.exists()) {
-            logger.warning("Missing index file: " + indexFile.getAbsolutePath());
-            return true;
         }
         
         return false;
@@ -176,10 +199,7 @@ public class BlastDatabase {
      */
     public long getDatabaseSize() {
         long totalSize = 0;
-        String[] extensions = molecularType.getRequiredExtensions();
-        
-        for (String ext : extensions) {
-            File dbFile = new File(databaseDir, databaseName + ext);
+        for (File dbFile : requiredFiles()) {
             if (dbFile.exists()) {
                 totalSize += dbFile.length();
             }
@@ -209,9 +229,10 @@ public class BlastDatabase {
             props.setProperty("custom." + entry.getKey(), entry.getValue());
         }
         
-        try (OutputStream os = new FileOutputStream(metadataFile)) {
-            props.store(os, "SimpleGenomeHub BLAST Database Metadata");
-        }
+        java.util.Map<String, String> changes = new java.util.LinkedHashMap<>();
+        for (String key : props.stringPropertyNames()) changes.put(key, props.getProperty(key));
+        simplegenomehub.util.fileio.AtomicFiles.updateProperties(metadataFile.toPath(), changes,
+            "SimpleGenomeHub BLAST Database Metadata");
     }
     
     /**
@@ -273,6 +294,11 @@ public class BlastDatabase {
         } catch (IOException e) {
             logger.warning("Unable to save custom metadata: " + e.getMessage());
         }
+    }
+
+    public void addMetadataChecked(String key, String value) throws IOException {
+        customMetadata.put(key, value);
+        saveMetadata();
     }
     
     /**

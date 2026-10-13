@@ -27,7 +27,7 @@ public final class HubDataRootLock implements AutoCloseable {
         try {
             FileLock lock;
             try { lock = channel.tryLock(); } catch (OverlappingFileLockException e) { lock = null; }
-            if (lock == null) throw new IOException("This data directory is already open in another Hub session: " + root);
+            if (lock == null) throw new HubDataRootInUseException(root);
             return new HubDataRootLock(root, channel, lock);
         } catch (IOException | RuntimeException failure) { channel.close(); throw failure; }
     }

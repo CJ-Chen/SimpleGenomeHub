@@ -136,9 +136,12 @@ public class BlastConfig {
      * Auto-detect BLAST executable path from common locations
      */
     private String autoDetectBlastPath() {
-        String resolved = simplegenomehub.runtime.HubToolResolver.resolve("blastp", null);
-        File executable = new File(resolved);
-        return executable.isAbsolute() && executable.isFile() ? executable.getParent() : "";
+        // Optional detection must not prevent the panel from opening before tools are installed.
+        try {
+            String resolved = simplegenomehub.runtime.HubToolResolver.resolve("blastp", null);
+            File executable = new File(resolved);
+            return executable.isAbsolute() && executable.isFile() ? executable.getParent() : "";
+        } catch (IllegalStateException missing) { return ""; }
     }
 
     private boolean isBlastAvailable(String command) {

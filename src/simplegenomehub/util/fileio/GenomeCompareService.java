@@ -14,6 +14,8 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
 import java.util.LinkedHashSet;
+import java.util.LinkedHashMap;
+import java.util.Map;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
@@ -202,8 +204,20 @@ public final class GenomeCompareService {
             OneStepMCScanXPureJava runner = new OneStepMCScanXPureJava();
             simplegenomehub.runtime.HubSession session = simplegenomehub.runtime.HubSession.current();
             simplegenomehub.blast.BlastConfig blastConfig = new simplegenomehub.blast.BlastConfig();
-            runner.setToolResolver(name -> "diamond".equals(name)
-                ? simplegenomehub.runtime.HubToolResolver.resolve(name, null) : blastConfig.resolveBlastCommand(name));
+            Map<String, simplegenomehub.runtime.HubToolResolver.ResolvedTool> resolvedTools = new LinkedHashMap<>();
+            java.util.function.Function<String, String> resolveOnce = name -> {
+                simplegenomehub.runtime.HubToolResolver.ResolvedTool selected = resolvedTools.get(name);
+                if (selected == null) {
+                    selected = simplegenomehub.runtime.HubToolResolver.resolveTool(name,
+                        "diamond".equals(name) ? null : blastConfig.getBlastExecutablePath());
+                    resolvedTools.put(name, selected);
+                    report(progressListener, "Using " + name + ": " + selected);
+                }
+                return selected.getExecutable();
+            };
+            try { resolveOnce.apply("diamond"); }
+            catch (IllegalStateException missing) { runner.setDiamondUnavailableReason(missing.getMessage()); }
+            runner.setToolResolver(resolveOnce);
             runner.setCancellationRequested(() -> session != null && !session.isActive());
             if (session != null) runner.setProcessRegistrar(process -> session.registerProcess(process));
             runner.setWkDirectory(outputDir);
@@ -218,7 +232,16 @@ public final class GenomeCompareService {
             runner.setIdPrefix_2(reuseSelfComparisonInputs ? "" : prefix2);
 
             report(progressListener, "Running TBtools One Step MCScanX (Pure Java)...");
-            runner.process();
+            try { runner.process(); }
+            catch (Exception failure) {
+                try { writeToolMetadata(outputDir, resolvedTools, runner); }
+                catch (IOException metadataFailure) { failure.addSuppressed(metadataFailure); }
+                throw failure;
+            }
+            writeToolMetadata(outputDir, resolvedTools, runner);
+            if (runner.getFallbackReason() != null)
+                report(progressListener, "DIAMOND unavailable; used BLAST: " + runner.getFallbackReason());
+            report(progressListener, "Similarity executable: " + runner.getSimilarityExecutable());
 
             List<File> collinearityFiles = findFilesWithSuffix(outputDir, ".collinearity");
             if (collinearityFiles.isEmpty()) {
@@ -837,6 +860,22 @@ public final class GenomeCompareService {
         } catch (Exception ex) {
             logger.log(Level.WARNING, "Failed to write Genome Compare metadata", ex);
         }
+    }
+
+    private static void writeToolMetadata(File outputDir,
+            Map<String, simplegenomehub.runtime.HubToolResolver.ResolvedTool> tools,
+            OneStepMCScanXPureJava runner) throws IOException {
+        Map<String, String> values = new LinkedHashMap<>();
+        for (Map.Entry<String, simplegenomehub.runtime.HubToolResolver.ResolvedTool> entry : tools.entrySet()) {
+            values.put(entry.getKey() + ".path", entry.getValue().getExecutable());
+            values.put(entry.getKey() + ".source", entry.getValue().getSource());
+            values.put(entry.getKey() + ".version", entry.getValue().getVersion());
+        }
+        values.put("mcscanx.implementation", "TBtools pure Java");
+        values.put("similarity.executable", safe(runner.getSimilarityExecutable()));
+        values.put("fallback.reason", safe(runner.getFallbackReason()));
+        AtomicFiles.updateProperties(new File(outputDir, "tools.properties").toPath(), values,
+            "Actual tools selected for Genome Compare");
     }
 
     private static String safe(String value) {

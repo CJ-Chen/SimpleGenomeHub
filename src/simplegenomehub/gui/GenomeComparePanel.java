@@ -4,6 +4,8 @@
  */
 package simplegenomehub.gui;
 
+import simplegenomehub.runtime.HubWorker;
+
 import simplegenomehub.model.SpeciesInfo;
 import simplegenomehub.model.SpeciesManager;
 import simplegenomehub.model.GenomeData;
@@ -488,8 +490,8 @@ public class GenomeComparePanel extends JPanel {
         resetLogArea();
         appendLogLine("Preparing genome compare...");
 
-        SwingWorker<GenomeCompareService.Result, String> worker =
-            new SwingWorker<GenomeCompareService.Result, String>() {
+        HubWorker<GenomeCompareService.Result, String> worker =
+            new HubWorker<GenomeCompareService.Result, String>() {
                 @Override
                 protected GenomeCompareService.Result doInBackground() throws Exception {
                     return GenomeCompareService.run(
@@ -513,68 +515,72 @@ public class GenomeComparePanel extends JPanel {
 
                 @Override
                 protected void done() {
-                    startButton.setEnabled(true);
                     try {
-                        GenomeCompareService.Result result = get();
-                        File outputDir = result.getOutputDir();
-                        StringBuilder message = new StringBuilder();
-                        String dualPlotStatus;
-                        boolean reorderChromosomes = reorderChromosomesCheckBox.isSelected();
-
+                        if (!isPresentationCurrent()) return;
                         try {
-                            DualSyntenyPlotLauncher.launch(result, reorderChromosomes);
-                            dualPlotStatus = "Dual Synteny Plot: launched";
-                        } catch (Exception visualizationEx) {
-                            dualPlotStatus = "Dual Synteny Plot: failed to launch\n" +
-                                visualizationEx.getMessage();
-                        }
+                            GenomeCompareService.Result result = get();
+                            File outputDir = result.getOutputDir();
+                            StringBuilder message = new StringBuilder();
+                            String dualPlotStatus;
+                            boolean reorderChromosomes = reorderChromosomesCheckBox.isSelected();
 
-                        message.append("Genome Compare completed.\n\n");
-                        message.append("Output folder:\n").append(outputDir.getAbsolutePath()).append("\n\n");
-
-                        File collinearityFile = result.getPrimaryCollinearityFile();
-                        if (collinearityFile != null) {
-                            message.append("Primary collinearity file:\n")
-                                .append(collinearityFile.getAbsolutePath())
-                                .append("\n");
-                        }
-
-                        if (result.getHtmlOutputs().isEmpty()) {
-                            message.append("\nDirect Plot: off");
-                        } else {
-                            message.append("\nDirect Plot: on");
-                        }
-
-                        if (reorderChromosomes) {
-                            File reorderingReportFile =
-                                DualSyntenyChromosomeOrderBuilder.getDefaultReportFile(outputDir);
-                            message.append("\nReordering of chromosomes: on");
-                            if (reorderingReportFile.isFile()) {
-                                message.append("\nChromosome reordering file:\n")
-                                    .append(reorderingReportFile.getAbsolutePath());
+                            try {
+                                DualSyntenyPlotLauncher.launch(result, reorderChromosomes);
+                                dualPlotStatus = "Dual Synteny Plot: launched";
+                            } catch (Exception visualizationEx) {
+                                dualPlotStatus = "Dual Synteny Plot: failed to launch\n" +
+                                    visualizationEx.getMessage();
                             }
-                        } else {
-                            message.append("\nReordering of chromosomes: off");
+
+                            message.append("Genome Compare completed.\n\n");
+                            message.append("Output folder:\n").append(outputDir.getAbsolutePath()).append("\n\n");
+
+                            File collinearityFile = result.getPrimaryCollinearityFile();
+                            if (collinearityFile != null) {
+                                message.append("Primary collinearity file:\n")
+                                    .append(collinearityFile.getAbsolutePath())
+                                    .append("\n");
+                            }
+
+                            if (result.getHtmlOutputs().isEmpty()) {
+                                message.append("\nDirect Plot: off");
+                            } else {
+                                message.append("\nDirect Plot: on");
+                            }
+
+                            if (reorderChromosomes) {
+                                File reorderingReportFile =
+                                    DualSyntenyChromosomeOrderBuilder.getDefaultReportFile(outputDir);
+                                message.append("\nReordering of chromosomes: on");
+                                if (reorderingReportFile.isFile()) {
+                                    message.append("\nChromosome reordering file:\n")
+                                        .append(reorderingReportFile.getAbsolutePath());
+                                }
+                            } else {
+                                message.append("\nReordering of chromosomes: off");
+                            }
+
+                            message.append("\n").append(dualPlotStatus);
+                            appendLogLine("Genome Compare completed.");
+                            appendLogLine("Output folder: " + outputDir.getAbsolutePath());
+                            appendLogLine("Direct Plot: " + (result.getHtmlOutputs().isEmpty() ? "off" : "on"));
+                            appendLogLine("Reordering of chromosomes: " + (reorderChromosomes ? "on" : "off"));
+                            appendLogLine(dualPlotStatus);
+
+                            JOptionPane.showMessageDialog(GenomeComparePanel.this,
+                                message.toString(),
+                                "Genome Compare Finished",
+                                JOptionPane.INFORMATION_MESSAGE);
+                        } catch (Exception ex) {
+                            Throwable cause = ex.getCause() != null ? ex.getCause() : ex;
+                            appendLogLine("Genome Compare failed: " + cause.getMessage());
+                            JOptionPane.showMessageDialog(GenomeComparePanel.this,
+                                "Genome Compare failed:\n" + cause.getMessage(),
+                                "Genome Compare Error",
+                                JOptionPane.ERROR_MESSAGE);
                         }
-
-                        message.append("\n").append(dualPlotStatus);
-                        appendLogLine("Genome Compare completed.");
-                        appendLogLine("Output folder: " + outputDir.getAbsolutePath());
-                        appendLogLine("Direct Plot: " + (result.getHtmlOutputs().isEmpty() ? "off" : "on"));
-                        appendLogLine("Reordering of chromosomes: " + (reorderChromosomes ? "on" : "off"));
-                        appendLogLine(dualPlotStatus);
-
-                        JOptionPane.showMessageDialog(GenomeComparePanel.this,
-                            message.toString(),
-                            "Genome Compare Finished",
-                            JOptionPane.INFORMATION_MESSAGE);
-                    } catch (Exception ex) {
-                        Throwable cause = ex.getCause() != null ? ex.getCause() : ex;
-                        appendLogLine("Genome Compare failed: " + cause.getMessage());
-                        JOptionPane.showMessageDialog(GenomeComparePanel.this,
-                            "Genome Compare failed:\n" + cause.getMessage(),
-                            "Genome Compare Error",
-                            JOptionPane.ERROR_MESSAGE);
+                    } finally {
+                        startButton.setEnabled(isPresentationCurrent());
                     }
                 }
             };

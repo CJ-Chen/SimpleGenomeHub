@@ -17,10 +17,8 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.atomic.AtomicBoolean;
 import javax.swing.JComponent;
 import javax.swing.RootPaneContainer;
-import javax.swing.SwingWorker;
 import javax.swing.SwingUtilities;
 import javax.swing.AbstractButton;
 import javax.swing.JMenu;
@@ -206,49 +204,40 @@ public final class HubSession {
         }
     }
 
-    /** Legacy algorithms that do not support safe cancellation are allowed to finish. */
-    public static void execute(Component owner, SwingWorker<?, ?> worker) {
+    /** Execute only workers with an explicit, exception-safe completion contract. */
+    public static void execute(Component owner, HubWorker<?, ?> worker) {
         HubSession session = forComponent(owner);
         if (session == null) {
             synchronized (SESSIONS) {
                 if (!SESSIONS.isEmpty()) throw new IllegalStateException("Cannot identify this task's Hub session");
             }
-            worker.execute(); return;
         }
-        Task task = session.beginTask(worker.getClass().getSimpleName(), null);
-        AtomicBoolean executionFinished = new AtomicBoolean();
-        AtomicBoolean uiFinished = new AtomicBoolean();
-        Runnable complete = () -> {
-            if (executionFinished.get() && uiFinished.get()) task.close();
+        worker.bind(session);
+        Runnable execution = () -> {
+            try { worker.run(); }
+            finally { worker.executionReturned(); }
         };
-        java.beans.PropertyChangeListener listener = new java.beans.PropertyChangeListener() {
-            @Override public void propertyChange(java.beans.PropertyChangeEvent event) {
-                if ("state".equals(event.getPropertyName())
-                    && event.getNewValue() == SwingWorker.StateValue.DONE) {
-                    uiFinished.set(true);
-                    complete.run();
-                    worker.removePropertyChangeListener(this);
-                }
-            }
-        };
-        worker.addPropertyChangeListener(listener);
         try {
-            session.executor.execute(() -> {
-                HubSession previous = EXECUTING.get();
-                EXECUTING.set(session);
-                try { worker.run(); }
-                finally {
-                    if (previous == null) EXECUTING.remove(); else EXECUTING.set(previous);
-                    executionFinished.set(true);
-                    // The DONE event follows done() on the EDT. Retaining this
-                    // lease until both stages finish prevents an old callback
-                    // from writing into a newly selected root.
-                    complete.run();
-                }
-            });
-        } catch (RuntimeException failure) {
-            worker.removePropertyChangeListener(listener);
-            task.close(); throw failure;
+            if (session == null) {
+                Thread standalone = new Thread(execution, "SGH-task-" + THREAD_IDS.incrementAndGet());
+                standalone.setDaemon(true);
+                standalone.start();
+            } else {
+                session.executor.execute(execution);
+            }
+        } catch (RuntimeException | Error failure) {
+            worker.submissionFailed(failure);
+            throw failure;
+        }
+    }
+
+    /** Carry the originating session through both the producer and its EDT callbacks. */
+    static void runInContext(HubSession session, Runnable action) {
+        HubSession previous = EXECUTING.get();
+        if (session == null) EXECUTING.remove(); else EXECUTING.set(session);
+        try { action.run(); }
+        finally {
+            if (previous == null) EXECUTING.remove(); else EXECUTING.set(previous);
         }
     }
 
@@ -308,13 +297,42 @@ public final class HubSession {
         }
         Thread closer = new Thread(() -> {
             try {
-                for (Task task : cancel) if (task.cancellation != null) task.cancellation.run();
-                for (Process process : stop) destroyProcess(process);
+                for (Task task : cancel) if (task.cancellation != null) {
+                    try { task.cancellation.run(); }
+                    catch (Throwable failure) { logCloseFailure("Cancel " + task.description, failure); }
+                }
+                for (Process process : stop) {
+                    List<ProcessHandle> owned = new ArrayList<>();
+                    owned.add(process.toHandle());
+                    process.descendants().forEach(owned::add);
+                    try { destroyProcess(process); }
+                    catch (Throwable failure) {
+                        // Keep its registration until the process really exits.
+                        // Failure to request termination cannot free the root.
+                        logCloseFailure("Stop Hub process", failure);
+                    }
+                    // Retain even descendants whose parent exited after a
+                    // failed termination request; its onExit registration alone
+                    // cannot establish that those writers have finished.
+                    boolean interrupted = false;
+                    for (ProcessHandle handle : owned) while (handle.isAlive()) {
+                        try { handle.onExit().get(100, java.util.concurrent.TimeUnit.MILLISECONDS); }
+                        catch (InterruptedException waiting) { interrupted = true; }
+                        catch (java.util.concurrent.TimeoutException waiting) { }
+                        catch (java.util.concurrent.ExecutionException failure) {
+                            logCloseFailure("Wait for Hub process", failure);
+                        }
+                    }
+                    if (interrupted) Thread.currentThread().interrupt();
+                }
                 synchronized (HubSession.this) {
                     while (!tasks.isEmpty() || !processes.isEmpty()) HubSession.this.wait(100);
                 }
                 executor.shutdown();
-                for (Runnable action : new ArrayList<>(cleanup)) action.run();
+                for (Runnable action : new ArrayList<>(cleanup)) {
+                    try { action.run(); }
+                    catch (Throwable failure) { logCloseFailure("Clean up Hub resources", failure); }
+                }
                 synchronized (HubSession.this) {
                     if (rootLock != null) rootLock.close();
                     rootLock = null;
@@ -328,6 +346,13 @@ public final class HubSession {
         closer.setDaemon(true);
         closer.start();
         return closeFuture;
+    }
+
+    private static void logCloseFailure(String operation, Throwable failure) {
+        try {
+            java.util.logging.Logger.getLogger(HubSession.class.getName())
+                .log(java.util.logging.Level.SEVERE, operation + " failed; continuing close", failure);
+        } catch (Throwable loggingFailure) { /* Continue the remaining cleanup even if logging fails. */ }
     }
 
     private static void destroyProcess(Process process) {

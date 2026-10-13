@@ -4,6 +4,8 @@
  */
 package simplegenomehub.gui;
 
+import simplegenomehub.runtime.HubWorker;
+
 import simplegenomehub.model.GenomeData;
 import simplegenomehub.model.SpeciesInfo;
 import simplegenomehub.model.SpeciesManager;
@@ -39,7 +41,6 @@ import javax.swing.JViewport;
 import javax.swing.Scrollable;
 import javax.swing.SwingConstants;
 import javax.swing.SwingUtilities;
-import javax.swing.SwingWorker;
 import javax.swing.border.EmptyBorder;
 import javax.swing.event.ChangeListener;
 import javax.swing.tree.DefaultMutableTreeNode;
@@ -1045,11 +1046,17 @@ public class MultipleSyntenyPanel extends JPanel {
         resetLogArea();
         appendLogLine("Preparing Multiple Synteny...");
 
-        SwingWorker<MultipleSyntenyService.Result, String> worker =
-            new SwingWorker<MultipleSyntenyService.Result, String>() {
+        HubWorker<MultipleSyntenyService.Result, String> worker =
+            new HubWorker<MultipleSyntenyService.Result, String>() {
                 @Override
                 protected MultipleSyntenyService.Result doInBackground() throws Exception {
-                    return MultipleSyntenyService.run(runInputs.request, this::publish);
+                    MultipleSyntenyService.Result result = MultipleSyntenyService.run(runInputs.request, this::publish);
+                    try {
+                        MultipleSyntenyResultViewerDialog.exportPreviewImage(result.getOutputDir());
+                    } catch (IOException previewEx) {
+                        publish("Preview export failed: " + previewEx.getMessage());
+                    }
+                    return result;
                 }
 
                 @Override
@@ -1061,54 +1068,53 @@ public class MultipleSyntenyPanel extends JPanel {
 
                 @Override
                 protected void done() {
-                        startButton.setEnabled(true);
+                    try {
+                        if (!isPresentationCurrent()) return;
                         try {
                             MultipleSyntenyService.Result result = get();
-                            try {
-                                MultipleSyntenyResultViewerDialog.exportPreviewImage(result.getOutputDir());
-                            } catch (IOException previewEx) {
-                                appendLogLine("Preview export failed: " + previewEx.getMessage());
+                            appendLogLine("Multiple Synteny completed.");
+                            appendLogLine("Batch folder: " + result.getOutputDir().getAbsolutePath());
+                            for (MultipleSyntenyService.PairResult pairResult : result.getPairResults()) {
+                                appendLogLine(pairResult.getDisplayLabel() + ": " + pairResult.getOutputDir().getAbsolutePath());
                             }
-                        appendLogLine("Multiple Synteny completed.");
-                        appendLogLine("Batch folder: " + result.getOutputDir().getAbsolutePath());
-                        for (MultipleSyntenyService.PairResult pairResult : result.getPairResults()) {
-                            appendLogLine(pairResult.getDisplayLabel() + ": " + pairResult.getOutputDir().getAbsolutePath());
-                        }
 
-                        StringBuilder message = new StringBuilder();
-                        message.append("Multiple Synteny completed.\n\n");
-                        message.append("Batch folder:\n").append(result.getOutputDir().getAbsolutePath()).append("\n\n");
-                        message.append("Pairwise result folders:\n");
-                        for (MultipleSyntenyService.PairResult pairResult : result.getPairResults()) {
-                            message.append(pairResult.getDisplayLabel())
-                                .append(": ")
-                                .append(pairResult.getOutputDir().getAbsolutePath())
-                                .append("\n");
-                        }
+                            StringBuilder message = new StringBuilder();
+                            message.append("Multiple Synteny completed.\n\n");
+                            message.append("Batch folder:\n").append(result.getOutputDir().getAbsolutePath()).append("\n\n");
+                            message.append("Pairwise result folders:\n");
+                            for (MultipleSyntenyService.PairResult pairResult : result.getPairResults()) {
+                                message.append(pairResult.getDisplayLabel())
+                                    .append(": ")
+                                    .append(pairResult.getOutputDir().getAbsolutePath())
+                                    .append("\n");
+                            }
 
-                        Object[] options = { "Open Viewer", "Close" };
-                        int option = JOptionPane.showOptionDialog(
-                            MultipleSyntenyPanel.this,
-                            message.toString() + "\nOpen the rendered result viewer now?",
-                            "Multiple Synteny Finished",
-                            JOptionPane.YES_NO_OPTION,
-                            JOptionPane.INFORMATION_MESSAGE,
-                            null,
-                            options,
-                            options[0]
-                        );
-                        if (option == JOptionPane.YES_OPTION) {
-                            openResultViewer(result.getOutputDir());
+                            Object[] options = { "Open Viewer", "Close" };
+                            int option = JOptionPane.showOptionDialog(
+                                MultipleSyntenyPanel.this,
+                                message.toString() + "\nOpen the rendered result viewer now?",
+                                "Multiple Synteny Finished",
+                                JOptionPane.YES_NO_OPTION,
+                                JOptionPane.INFORMATION_MESSAGE,
+                                null,
+                                options,
+                                options[0]
+                            );
+                            if (option == JOptionPane.YES_OPTION) {
+                                openResultViewer(result.getOutputDir());
+                            }
+                        } catch (Exception ex) {
+                            Throwable cause = ex.getCause() != null ? ex.getCause() : ex;
+                            appendLogLine("Multiple Synteny failed: " + cause.getMessage());
+                            JOptionPane.showMessageDialog(
+                                MultipleSyntenyPanel.this,
+                                "Multiple Synteny failed:\n" + cause.getMessage(),
+                                "Multiple Synteny Error",
+                                JOptionPane.ERROR_MESSAGE
+                            );
                         }
-                    } catch (Exception ex) {
-                        Throwable cause = ex.getCause() != null ? ex.getCause() : ex;
-                        appendLogLine("Multiple Synteny failed: " + cause.getMessage());
-                        JOptionPane.showMessageDialog(
-                            MultipleSyntenyPanel.this,
-                            "Multiple Synteny failed:\n" + cause.getMessage(),
-                            "Multiple Synteny Error",
-                            JOptionPane.ERROR_MESSAGE
-                        );
+                    } finally {
+                        startButton.setEnabled(isPresentationCurrent());
                     }
                 }
             };

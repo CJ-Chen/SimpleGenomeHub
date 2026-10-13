@@ -491,7 +491,9 @@ public class BlastPanel extends JPanel {
      * Add status message
      */
     private void addStatusMessage(String message) {
+        final long generation = hubSession == null ? 0 : hubSession.getGeneration();
         SwingUtilities.invokeLater(() -> {
+            if (closing || (hubSession != null && !hubSession.accepts(generation))) return;
             statusArea.append("[" + java.time.LocalTime.now().toString() + "] " + message + "\n");
             statusArea.setCaretPosition(statusArea.getDocument().getLength());
         });
@@ -501,6 +503,7 @@ public class BlastPanel extends JPanel {
      * Show error message
      */
     private void showErrorMessage(String title, String message) {
+        if (closing || (hubSession != null && !hubSession.isActive())) return;
         JOptionPane.showMessageDialog(this, message, title, JOptionPane.ERROR_MESSAGE);
     }
     
@@ -518,6 +521,7 @@ public class BlastPanel extends JPanel {
      * Execute BLAST query
      */
     private void executeBlast() {
+        if (closing || (hubSession != null && !hubSession.isActive())) return;
         // Validate input
         SpeciesInfo selectedSpecies = getSelectedSpecies();
         if (selectedSpecies == null) {
@@ -553,29 +557,18 @@ public class BlastPanel extends JPanel {
         // Get BLAST type for results display
         BlastExecutor.BlastType blastType = (BlastExecutor.BlastType) blastTypeCombo.getSelectedItem();
 
-        // Get database path for tree building
-        File databasePath = null;
-        try {
-            simplegenomehub.blast.model.BlastDatabase targetDb = dbManager.ensureDatabaseExists(
-                selectedSpecies,
-                query.getTargetSequenceType()
-            );
-            databasePath = new File(targetDb.getDatabasePath());
-            addStatusMessage("Using database: " + databasePath.getAbsolutePath());
-        } catch (Exception e) {
-            addStatusMessage("Warning: Could not determine database path: " + e.getMessage());
-        }
-
-        // Make database path final for lambda access
-        final File finalDatabasePath = databasePath;
-
         // Execute asynchronously
-        CompletableFuture<BlastResult> future = blastExecutor.executeBlastAsync(query);
+        final long generation = hubSession == null ? 0 : hubSession.getGeneration();
+        CompletableFuture<BlastResult> future = blastExecutor.executeBlastAsync(query, message -> SwingUtilities.invokeLater(() -> {
+            if (closing || (hubSession != null && !hubSession.accepts(generation))) return;
+            progressBar.setString(message);
+            addStatusMessage(message);
+        }));
 
         future.whenComplete((result, throwable) -> {
             SwingUtilities.invokeLater(() -> {
+                if (closing || (hubSession != null && !hubSession.accepts(generation))) return;
                 progressBar.setIndeterminate(false);
-                if (closing || (hubSession != null && !hubSession.isActive())) return;
                 executeButton.setEnabled(true);
 
                 if (throwable != null) {
@@ -588,7 +581,7 @@ public class BlastPanel extends JPanel {
                     addStatusMessage("Query ID: " + result.getQueryId());
 
                     // Display results with blast type information and database path
-                    resultsPanel.setResults(result, blastType, finalDatabasePath);
+                    resultsPanel.setResults(result, blastType, result.getTargetDatabase());
                 }
             });
         });

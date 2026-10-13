@@ -1,5 +1,7 @@
 package simplegenomehub.gui;
 
+import simplegenomehub.runtime.HubWorker;
+
 import simplegenomehub.model.GenomeData;
 import simplegenomehub.model.SpeciesInfo;
 import simplegenomehub.util.fileio.AdvancedCircosPreviewExporter;
@@ -1241,7 +1243,7 @@ final class SpeciesOverviewPanel extends JPanel {
         chromosomeStatsReloadInProgress = true;
         File annotationFile = currentSpecies.getAnnotationFile();
 
-        SwingWorker<GenomeData, Void> worker = new SwingWorker<GenomeData, Void>() {
+        HubWorker<GenomeData, Void> worker = new HubWorker<GenomeData, Void>() {
             @Override
             protected GenomeData doInBackground() {
                 GenomeData genomeData = GenomeStatsCalculator.calculateGenomeStats(genomeFile, annotationFile);
@@ -1251,20 +1253,24 @@ final class SpeciesOverviewPanel extends JPanel {
 
             @Override
             protected void done() {
-                chromosomeStatsReloadInProgress = false;
                 try {
-                    GenomeData genomeData = get();
-                    if (genomeData != null) {
-                        currentSpecies.setGenomeData(genomeData);
+                    if (!isPresentationCurrent()) return;
+                    try {
+                        GenomeData genomeData = get();
+                        if (genomeData != null) {
+                            currentSpecies.setGenomeData(genomeData);
+                        }
+                    } catch (Exception e) {
+                        statisticsArea.setText("Failed to regenerate chromosome statistics.\n" + e.getMessage());
+                        statisticsArea.setCaretPosition(0);
+                        return;
                     }
-                } catch (Exception e) {
-                    statisticsArea.setText("Failed to regenerate chromosome statistics.\n" + e.getMessage());
-                    statisticsArea.setCaretPosition(0);
-                    return;
-                }
 
-                if (currentStatisticsView == StatisticsView.CHROMOSOME) {
-                    updateStatisticsText();
+                    if (currentStatisticsView == StatisticsView.CHROMOSOME) {
+                        updateStatisticsText();
+                    }
+                } finally {
+                    chromosomeStatsReloadInProgress = false;
                 }
             }
         };

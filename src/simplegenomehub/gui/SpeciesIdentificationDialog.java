@@ -1,5 +1,7 @@
 package simplegenomehub.gui;
 
+import simplegenomehub.runtime.HubWorker;
+
 import simplegenomehub.util.identification.SpeciesIdentificationEngine;
 import simplegenomehub.util.identification.SpeciesMatchResult;
 import simplegenomehub.util.identification.SpeciesMatchResult.SequenceMatch;
@@ -474,8 +476,8 @@ public class SpeciesIdentificationDialog extends JDialog {
         statusLabel.setText("Processing " + sequenceIds.size() + " sequence IDs...");
         
         // Perform search in background
-        SwingWorker<List<SpeciesMatchResult>, String> worker = 
-            new SwingWorker<List<SpeciesMatchResult>, String>() {
+        HubWorker<List<SpeciesMatchResult>, String> worker =
+            new HubWorker<List<SpeciesMatchResult>, String>() {
             
             @Override
             protected List<SpeciesMatchResult> doInBackground() throws Exception {
@@ -501,35 +503,38 @@ public class SpeciesIdentificationDialog extends JDialog {
             @Override
             protected void done() {
                 try {
-                    currentResults = get();
-                    progressBar.setIndeterminate(false);
-                    progressBar.setValue(100);
-                    progressBar.setString("Search completed");
-                    
-                    resultsTableModel.fireTableDataChanged();
-                    
-                    String message;
-                    if (currentResults.isEmpty()) {
-                        message = "No matching species found for the provided sequence IDs";
-                    } else {
-                        message = "Found " + currentResults.size() + " matching species";
-                        // Auto-select best match
-                        if (resultsTable.getRowCount() > 0) {
-                            resultsTable.setRowSelectionInterval(0, 0);
+                    if (!isPresentationCurrent()) return;
+                    try {
+                        currentResults = get();
+                        progressBar.setIndeterminate(false);
+                        progressBar.setValue(100);
+                        progressBar.setString("Search completed");
+
+                        resultsTableModel.fireTableDataChanged();
+
+                        String message;
+                        if (currentResults.isEmpty()) {
+                            message = "No matching species found for the provided sequence IDs";
+                        } else {
+                            message = "Found " + currentResults.size() + " matching species";
+                            // Auto-select best match
+                            if (resultsTable.getRowCount() > 0) {
+                                resultsTable.setRowSelectionInterval(0, 0);
+                            }
                         }
+                        statusLabel.setText(message);
+
+                    } catch (Exception ex) {
+                        progressBar.setIndeterminate(false);
+                        progressBar.setValue(0);
+                        progressBar.setString("Search failed");
+                        statusLabel.setText("Error: " + ex.getMessage());
+                        JOptionPane.showMessageDialog(SpeciesIdentificationDialog.this,
+                            "Error during search: " + ex.getMessage(),
+                            "Search Error", JOptionPane.ERROR_MESSAGE);
                     }
-                    statusLabel.setText(message);
-                    
-                } catch (Exception ex) {
-                    progressBar.setIndeterminate(false);
-                    progressBar.setValue(0);
-                    progressBar.setString("Search failed");
-                    statusLabel.setText("Error: " + ex.getMessage());
-                    JOptionPane.showMessageDialog(SpeciesIdentificationDialog.this,
-                        "Error during search: " + ex.getMessage(),
-                        "Search Error", JOptionPane.ERROR_MESSAGE);
                 } finally {
-                    searchButton.setEnabled(true);
+                    searchButton.setEnabled(isPresentationCurrent());
                 }
             }
         };

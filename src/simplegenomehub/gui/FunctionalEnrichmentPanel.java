@@ -4,6 +4,8 @@
  */
 package simplegenomehub.gui;
 
+import simplegenomehub.runtime.HubWorker;
+
 import simplegenomehub.model.*;
 import simplegenomehub.model.GeneAnnotationData.AnnotationType;
 import simplegenomehub.util.enrichment.*;
@@ -705,7 +707,7 @@ public class FunctionalEnrichmentPanel extends JDialog {
         updateEngineParameters();
         
         // Run analysis in background
-        SwingWorker<EnrichmentAnalysisResult, Void> worker = new SwingWorker<EnrichmentAnalysisResult, Void>() {
+        HubWorker<EnrichmentAnalysisResult, Void> worker = new HubWorker<EnrichmentAnalysisResult, Void>() {
             @Override
             protected EnrichmentAnalysisResult doInBackground() throws Exception {
                 return enrichmentEngine.performEnrichment(currentGeneList, selectedType);
@@ -714,18 +716,21 @@ public class FunctionalEnrichmentPanel extends JDialog {
             @Override
             protected void done() {
                 try {
-                    currentResult = get();
-                    displayResults(currentResult);
-                    
-                } catch (Exception e) {
-                    logger.log(Level.SEVERE, "Enrichment analysis failed", e);
-                    JOptionPane.showMessageDialog(FunctionalEnrichmentPanel.this,
-                        "Analysis failed: " + e.getMessage(),
-                        "Analysis Error", JOptionPane.ERROR_MESSAGE);
+                    if (!isPresentationCurrent()) return;
+                    try {
+                        currentResult = get();
+                        displayResults(currentResult);
+
+                    } catch (Exception e) {
+                        logger.log(Level.SEVERE, "Enrichment analysis failed", e);
+                        JOptionPane.showMessageDialog(FunctionalEnrichmentPanel.this,
+                            "Analysis failed: " + e.getMessage(),
+                            "Analysis Error", JOptionPane.ERROR_MESSAGE);
+                    }
                 } finally {
                     // Hide progress bar and restore UI
                     progressBar.setVisible(false);
-                    runAnalysisButton.setEnabled(true);
+                    runAnalysisButton.setEnabled(isPresentationCurrent());
                     statusLabel.setText("Analysis completed");
                 }
             }

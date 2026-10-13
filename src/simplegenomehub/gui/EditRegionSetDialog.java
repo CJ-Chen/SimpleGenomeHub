@@ -1,5 +1,7 @@
 package simplegenomehub.gui;
 
+import simplegenomehub.runtime.HubWorker;
+
 import simplegenomehub.model.SpeciesInfo;
 
 import javax.swing.*;
@@ -21,7 +23,7 @@ final class EditRegionSetDialog extends JDialog {
     private final JTextField regionSetNameField;
     private final JTextArea regionSetArea;
     private final JButton saveButton;
-    private boolean regionSetUpdated;
+    private volatile boolean regionSetUpdated;
 
     EditRegionSetDialog(Window parent, SpeciesInfo species, File regionSetFile, Runnable onUpdateSuccess) {
         super(parent, "Edit Region Set", ModalityType.MODELESS);
@@ -205,57 +207,66 @@ final class EditRegionSetDialog extends JDialog {
 
         setControlsEnabled(false);
 
-        SwingWorker<List<String>, Void> worker = new SwingWorker<List<String>, Void>() {
+        HubWorker<List<String>, Void> worker = new HubWorker<List<String>, Void>() {
             @Override
             protected List<String> doInBackground() throws Exception {
                 Map<String, Long> chromosomeSizes = GeneSetFileSupport.loadChromosomeSizesFromStats(statsFile);
-                return GeneSetFileSupport.validateRegionEntries(regionEntries, chromosomeSizes);
-            }
-
-            @Override
-            protected void done() {
-                if (!EditRegionSetDialog.this.isDisplayable()) {
-                    return;
-                }
-
-                try {
-                    List<String> validationErrors = get();
-                    if (!validationErrors.isEmpty()) {
-                        JTextArea errorArea = new JTextArea(String.join("\n", validationErrors), 12, 42);
-                        errorArea.setEditable(false);
-                        errorArea.setFont(SimpleGenomeHubStyle.FONT_MONOSPACED_PLAIN_12);
-                        JOptionPane.showMessageDialog(
-                            EditRegionSetDialog.this,
-                            new JScrollPane(errorArea),
-                            "Region Set Validation Failed",
-                            JOptionPane.WARNING_MESSAGE
-                        );
-                        return;
-                    }
-
+                List<String> validationErrors = GeneSetFileSupport.validateRegionEntries(regionEntries, chromosomeSizes);
+                if (validationErrors.isEmpty()) {
+                    if (isCancelled()) throw new java.util.concurrent.CancellationException();
                     GeneSetFileSupport.writeTextFile(targetFile,
                         GeneSetFileSupport.formatRegionSetContent(regionEntries));
                     if (!targetFile.equals(originalFile) && originalFile.exists() && !originalFile.delete()) {
                         throw new IllegalStateException("Failed to remove the original region set file.");
                     }
-
                     regionSetUpdated = true;
-                    JOptionPane.showMessageDialog(EditRegionSetDialog.this,
-                        "Region set updated successfully:\n" + targetFile.getName(),
-                        "Save Complete",
-                        JOptionPane.INFORMATION_MESSAGE);
-                    dispose();
-                    if (onUpdateSuccess != null) {
-                        onUpdateSuccess.run();
+                }
+                return validationErrors;
+            }
+
+            @Override
+            protected void done() {
+                try {
+                    if (!isPresentationCurrent()) return;
+                    if (!EditRegionSetDialog.this.isDisplayable()) {
+                        return;
                     }
-                } catch (Exception ex) {
-                    logger.warning("Failed to update region set: " + ex.getMessage());
-                    JOptionPane.showMessageDialog(EditRegionSetDialog.this,
-                        "Failed to update region set:\n" + ex.getMessage(),
-                        "Save Failed",
-                        JOptionPane.ERROR_MESSAGE);
+
+                    try {
+                        List<String> validationErrors = get();
+                        if (!validationErrors.isEmpty()) {
+                            JTextArea errorArea = new JTextArea(String.join("\n", validationErrors), 12, 42);
+                            errorArea.setEditable(false);
+                            errorArea.setFont(SimpleGenomeHubStyle.FONT_MONOSPACED_PLAIN_12);
+                            JOptionPane.showMessageDialog(
+                                EditRegionSetDialog.this,
+                                new JScrollPane(errorArea),
+                                "Region Set Validation Failed",
+                                JOptionPane.WARNING_MESSAGE
+                            );
+                            return;
+                        }
+
+                        // The background task committed the validated file before completing.
+
+                        regionSetUpdated = true;
+                        JOptionPane.showMessageDialog(EditRegionSetDialog.this,
+                            "Region set updated successfully:\n" + targetFile.getName(),
+                            "Save Complete",
+                            JOptionPane.INFORMATION_MESSAGE);
+                        dispose();
+                        if (onUpdateSuccess != null) {
+                            onUpdateSuccess.run();
+                        }
+                    } catch (Exception ex) {
+                        logger.warning("Failed to update region set: " + ex.getMessage());
+                        JOptionPane.showMessageDialog(EditRegionSetDialog.this,
+                            "Failed to update region set:\n" + ex.getMessage(),
+                            "Save Failed",
+                            JOptionPane.ERROR_MESSAGE);
+                    }
                 } finally {
-                    setControlsEnabled(true);
+                    setControlsEnabled(isPresentationCurrent());
                 }
             }
         };

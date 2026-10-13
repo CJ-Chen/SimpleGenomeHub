@@ -1,14 +1,12 @@
 package simplegenomehub.util.fileio;
 
 import biocjava.GUIexcutors.TBtools;
-import biocjava.bioDoer.Eggnog.EggnogDbConstants;
+import biocjava.bioDoer.Eggnog.EggnogCacheManager;
+import simplegenomehub.runtime.HubToolResolver;
 import biocjava.bioDoer.Eggnog.EggnogDbProvider;
 import biocjava.bioDoer.Kegg.KeggBackEndConstants;
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
-import eggnogmapper.cli.CliArgs;
-import eggnogmapper.cli.CliParser;
-import eggnogmapper.emapper.EmapperPipeline;
 import simplegenomehub.config.ApplicationLayout;
 import simplegenomehub.model.GeneAnnotationData;
 import simplegenomehub.model.SpeciesInfo;
@@ -27,8 +25,6 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicReference;
-import java.util.logging.Level;
 import java.util.logging.Logger;
 
 /**
@@ -111,33 +107,39 @@ public final class AutoFunctionalAnnotationService {
         }
 
         report(progressListener, "Resolving eggNOG database...");
-        File eggnogDbDir = ensureEggnogDatabase(parent, parameters.getTaxScope());
+        HubToolResolver.ResolvedTool diamond = HubToolResolver.resolveTool("diamond", null);
+        report(progressListener, "DIAMOND: " + diamond.getExecutable() + " [" + diamond.getSource() + "; " + diamond.getVersion() + "]");
+        logger.info("eggNOG DIAMOND: " + diamond.getExecutable() + " [" + diamond.getSource() + "; " + diamond.getVersion() + "]");
+        try (EggnogCacheManager.DatabaseLease database = EggnogDbProvider.acquireDatabase(
+                TBtools.USERHOME(), parameters.getTaxScope(), parent)) {
+            File eggnogDbDir = database.getDirectory();
 
-        report(progressListener, "Running eggNOG-mapper...");
-        runEggnogPipeline(outputDir, proteinFile, eggnogDbDir, parameters);
+            report(progressListener, "Running eggNOG-mapper...");
+            runEggnogPipeline(outputDir, proteinFile, eggnogDbDir, parameters, diamond, database.getDiamondDatabaseFile());
 
-        File annotationsFile = new File(outputDir, parameters.getOutputPrefix() + ".emapper.annotations");
-        if (!annotationsFile.isFile()) {
-            throw new FileNotFoundException("eggNOG output not found: " + annotationsFile.getAbsolutePath());
+            File annotationsFile = new File(outputDir, parameters.getOutputPrefix() + ".emapper.annotations");
+            if (!annotationsFile.isFile()) {
+                throw new FileNotFoundException("eggNOG output not found: " + annotationsFile.getAbsolutePath());
+            }
+
+            report(progressListener, "Splitting eggNOG annotation outputs...");
+            runEggnogHelper(annotationsFile, outputDir);
+
+            report(progressListener, "Preparing GO OBO resource...");
+            File goOboFile = ensureGoObo(parent, species);
+
+            report(progressListener, "Preparing KEGG backend...");
+            File keggBackendFile = ensureKeggBackend(parent, species, parameters);
+
+            report(progressListener, "Importing annotations into species database...");
+            Result result = importOutputs(species, annotationFile, outputDir, parameters, goOboFile, keggBackendFile);
+
+            report(progressListener, "Writing run metadata...");
+            writeRunMetadata(species, proteinFile, outputDir, parameters, goOboFile, keggBackendFile, result, diamond);
+
+            report(progressListener, "Auto annotation completed.");
+            return result;
         }
-
-        report(progressListener, "Splitting eggNOG annotation outputs...");
-        runEggnogHelper(annotationsFile, outputDir);
-
-        report(progressListener, "Preparing GO OBO resource...");
-        File goOboFile = ensureGoObo(parent, species);
-
-        report(progressListener, "Preparing KEGG backend...");
-        File keggBackendFile = ensureKeggBackend(parent, species, parameters);
-
-        report(progressListener, "Importing annotations into species database...");
-        Result result = importOutputs(species, annotationFile, outputDir, parameters, goOboFile, keggBackendFile);
-
-        report(progressListener, "Writing run metadata...");
-        writeRunMetadata(species, proteinFile, outputDir, parameters, goOboFile, keggBackendFile, result);
-
-        report(progressListener, "Auto annotation completed.");
-        return result;
     }
 
     private static File ensureRepresentativeProteins(SpeciesInfo species, File genomeFile, File annotationFile,
@@ -154,27 +156,6 @@ public final class AutoFunctionalAnnotationService {
             throw new IOException("Failed to build representative proteins: " + extractionResult.getMessage());
         }
         return proteinFile;
-    }
-
-    private static File ensureEggnogDatabase(Component parent, String taxScope) throws Exception {
-        if (!EggnogDbConstants.isKnownTaxScope(taxScope)) {
-            throw new IllegalArgumentException("Unsupported eggNOG tax scope: " + taxScope);
-        }
-
-        File homeDir = TBtools.USERHOME();
-        CountDownLatch latch = new CountDownLatch(1);
-        AtomicReference<File> resolved = new AtomicReference<>();
-        EggnogDbProvider.ensureDatabaseAndThen(homeDir, taxScope, parent, resolved::set, latch::countDown);
-        latch.await(6, TimeUnit.HOURS);
-
-        File categoryDir = resolved.get();
-        if (categoryDir == null) {
-            categoryDir = EggnogDbProvider.getCategoryDir(homeDir, taxScope);
-        }
-        if (!EggnogDbProvider.isDatabaseReady(categoryDir)) {
-            throw new IOException("eggNOG database unavailable for tax scope: " + taxScope);
-        }
-        return categoryDir;
     }
 
     private static File ensureGoObo(Component parent, SpeciesInfo species) throws Exception {
@@ -231,10 +212,9 @@ public final class AutoFunctionalAnnotationService {
     }
 
     private static void runEggnogPipeline(File outputDir, File proteinFile, File eggnogDbDir,
-                                          Parameters parameters) throws Exception {
-        String diamondExecutable = simplegenomehub.runtime.HubToolResolver.resolve("diamond", null);
-        ensureDiamondAvailable(diamondExecutable);
-        String dmndPath = new File(eggnogDbDir, EggnogDbConstants.getDiamondDbFileName(parameters.getTaxScope())).getAbsolutePath();
+                                          Parameters parameters, HubToolResolver.ResolvedTool diamond, File diamondDatabase) throws Exception {
+        String diamondExecutable = diamond.getExecutable();
+        String dmndPath = diamondDatabase.getAbsolutePath();
         String[] args = new String[]{
             "-m", "diamond",
             "--diamond_bin", diamondExecutable,
@@ -259,12 +239,6 @@ public final class AutoFunctionalAnnotationService {
         biocjava.bioDoer.BLAST.ToolProcessRunner.Result completed = simplegenomehub.runtime.HubProcessRunner.run(
             new ProcessBuilder(command), 7, TimeUnit.DAYS);
         if (completed.exitCode != 0) throw new IOException("eggNOG-mapper failed: " + completed.output);
-    }
-
-    private static void ensureDiamondAvailable(String executable) throws Exception {
-        biocjava.bioDoer.BLAST.ToolProcessRunner.Result completed = simplegenomehub.runtime.HubProcessRunner.run(
-            new ProcessBuilder(executable, "version"), 45, TimeUnit.SECONDS);
-        if (completed.exitCode != 0) throw new IOException("Cannot run DIAMOND at " + executable + ": " + completed.output);
     }
 
     private static void runEggnogHelper(File annotationsFile, File outputDir) throws Exception {
@@ -430,35 +404,50 @@ public final class AutoFunctionalAnnotationService {
     }
 
     private static ParsedTable parseDelimitedTable(File file) throws IOException {
+        try { return parseDelimitedTable(file, StandardCharsets.UTF_8); }
+        catch (java.nio.charset.CharacterCodingException badEncoding) {
+            if (java.nio.charset.Charset.defaultCharset().equals(StandardCharsets.UTF_8)) throw badEncoding;
+            return parseDelimitedTable(file, java.nio.charset.Charset.defaultCharset());
+        }
+    }
+
+    private static ParsedTable parseDelimitedTable(File file, java.nio.charset.Charset charset) throws IOException {
         List<String[]> rows = new ArrayList<>();
         String[] headers = new String[]{"Gene_ID", "Description", "Source"};
-        try (BufferedReader reader = Files.newBufferedReader(file.toPath(), StandardCharsets.UTF_8)) {
+        try (BufferedReader reader = Files.newBufferedReader(file.toPath(), charset)) {
             String line;
-            boolean firstData = true;
+            boolean dataStarted = false;
+            String[] explicitHeader = null;
+            int lineNumber = 0;
             while ((line = reader.readLine()) != null) {
+                lineNumber++;
+                if (lineNumber == 1 && line.startsWith("\uFEFF")) line = line.substring(1);
                 if (line.trim().isEmpty()) {
                     continue;
                 }
-                String[] parts = line.split("\t", -1);
-                if (line.startsWith("#")) {
-                    headers = trimArray(line.substring(1).split("\t", -1));
-                    firstData = false;
+                String original = line.trim();
+                boolean comment = original.startsWith("#");
+                String[] parts = trimArray((comment ? original.substring(1) : line).split("\t", -1));
+                if (looksLikeHeader(parts)) {
+                    if (explicitHeader == null && !dataStarted) {
+                        explicitHeader = parts;
+                        headers = parts;
+                    } else if (!java.util.Arrays.equals(explicitHeader, parts)) {
+                        throw new IOException("Conflicting annotation header at line " + lineNumber + " in " + file);
+                    }
                     continue;
                 }
-                if (firstData && looksLikeHeader(parts)) {
-                    headers = trimArray(parts);
-                    firstData = false;
-                    continue;
-                }
+                if (comment) continue;
                 rows.add(trimArray(parts));
-                firstData = false;
+                dataStarted = true;
             }
         }
         return new ParsedTable(headers, rows);
     }
 
     private static boolean looksLikeHeader(String[] parts) {
-        return parts.length > 0 && parts[0].toLowerCase(Locale.ROOT).contains("gene");
+        return parts.length >= 2 && ("Gene".equalsIgnoreCase(parts[0])
+            || "Gene_ID".equalsIgnoreCase(parts[0]) || "GeneID".equalsIgnoreCase(parts[0]));
     }
 
     private static String[] trimArray(String[] values) {
@@ -500,54 +489,50 @@ public final class AutoFunctionalAnnotationService {
 
     private static void writeRunMetadata(SpeciesInfo species, File proteinFile, File outputDir,
                                          Parameters parameters, File goOboFile, File keggBackendFile,
-                                         Result result) {
-        try {
-            Map<String, Object> metadata = new LinkedHashMap<>();
-            metadata.put("species", species.getSpeciesDirectoryName());
-            metadata.put("proteinFasta", proteinFile.getAbsolutePath());
-            metadata.put("taxScope", parameters.getTaxScope());
-            metadata.put("cpu", parameters.getCpu());
-            metadata.put("evalue", parameters.getEvalue());
-            metadata.put("outputPrefix", parameters.getOutputPrefix());
-            metadata.put("keggBackendMode", parameters.getKeggBackendMode().name());
-            metadata.put("keggBackendType", parameters.getKeggBackendType());
-            metadata.put("goOboPath", goOboFile != null ? goOboFile.getAbsolutePath() : "");
-            metadata.put("keggBackendPath", keggBackendFile != null ? keggBackendFile.getAbsolutePath() : "");
-            metadata.put("runTime", LocalDateTime.now().toString());
+                                         Result result, HubToolResolver.ResolvedTool diamond) throws IOException {
+        Map<String, Object> metadata = new LinkedHashMap<>();
+        metadata.put("species", species.getSpeciesDirectoryName());
+        metadata.put("proteinFasta", proteinFile.getAbsolutePath());
+        metadata.put("taxScope", parameters.getTaxScope());
+        metadata.put("diamondExecutable", diamond.getExecutable());
+        metadata.put("diamondSource", diamond.getSource());
+        metadata.put("diamondVersion", diamond.getVersion());
+        metadata.put("cpu", parameters.getCpu());
+        metadata.put("evalue", parameters.getEvalue());
+        metadata.put("outputPrefix", parameters.getOutputPrefix());
+        metadata.put("keggBackendMode", parameters.getKeggBackendMode().name());
+        metadata.put("keggBackendType", parameters.getKeggBackendType());
+        metadata.put("goOboPath", goOboFile != null ? goOboFile.getAbsolutePath() : "");
+        metadata.put("keggBackendPath", keggBackendFile != null ? keggBackendFile.getAbsolutePath() : "");
+        metadata.put("runTime", LocalDateTime.now().toString());
 
-            Map<String, Integer> imported = new LinkedHashMap<>();
-            for (Map.Entry<GeneAnnotationData.AnnotationType, Integer> entry : result.getImportedCounts().entrySet()) {
-                if (entry.getValue() != null && entry.getValue() > 0) {
-                    imported.put(entry.getKey().getShortName(), entry.getValue());
-                }
+        Map<String, Integer> imported = new LinkedHashMap<>();
+        for (Map.Entry<GeneAnnotationData.AnnotationType, Integer> entry : result.getImportedCounts().entrySet()) {
+            if (entry.getValue() != null && entry.getValue() > 0) {
+                imported.put(entry.getKey().getShortName(), entry.getValue());
             }
-            metadata.put("importedCounts", imported);
-
-            List<String> rawFiles = new ArrayList<>();
-            File[] outputFiles = outputDir.listFiles();
-            if (outputFiles != null) {
-                for (File file : outputFiles) {
-                    if (file.isFile()) {
-                        rawFiles.add(file.getName());
-                    }
-                }
-            }
-            metadata.put("rawOutputFiles", rawFiles);
-
-            Gson gson = new GsonBuilder().setPrettyPrinting().create();
-            File metadataFile = new File(outputDir, "run-metadata.json");
-            try (Writer writer = Files.newBufferedWriter(metadataFile.toPath(), StandardCharsets.UTF_8)) {
-                gson.toJson(metadata, writer);
-            }
-        } catch (Exception e) {
-            logger.log(Level.WARNING, "Failed to write eggNOG run metadata", e);
         }
+        metadata.put("importedCounts", imported);
+
+        List<String> rawFiles = new ArrayList<>();
+        File[] outputFiles = outputDir.listFiles();
+        if (outputFiles != null) {
+            for (File file : outputFiles) {
+                if (file.isFile()) {
+                    rawFiles.add(file.getName());
+                }
+            }
+        }
+        metadata.put("rawOutputFiles", rawFiles);
+
+        Gson gson = new GsonBuilder().setPrettyPrinting().create();
+        File metadataFile = new File(outputDir, "run-metadata.json");
+        AtomicFiles.write(metadataFile.toPath(), writer -> gson.toJson(metadata, writer));
     }
 
     private static void report(ProgressListener progressListener, String message) {
         if (Thread.currentThread().isInterrupted()) throw new java.util.concurrent.CancellationException("Auto annotation cancelled");
-        simplegenomehub.runtime.HubSession session = simplegenomehub.runtime.HubSession.current();
-        if (session != null && !session.isActive()) throw new java.util.concurrent.CancellationException("Hub is closing");
+
         if (progressListener != null) {
             progressListener.onProgress(message);
         }

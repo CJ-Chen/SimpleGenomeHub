@@ -3,6 +3,8 @@
  */
 package simplegenomehub.gui;
 
+import simplegenomehub.runtime.HubWorker;
+
 import simplegenomehub.model.SpeciesInfo;
 import simplegenomehub.util.fileio.CachedSequenceLookup;
 
@@ -284,8 +286,8 @@ public class SequenceLookupDialog extends JDialog {
         searchButton.setEnabled(false);
 
         // Perform search in background
-        SwingWorker<List<CachedSequenceLookup.LookupResult>, String> worker =
-            new SwingWorker<List<CachedSequenceLookup.LookupResult>, String>() {
+        HubWorker<List<CachedSequenceLookup.LookupResult>, String> worker =
+            new HubWorker<List<CachedSequenceLookup.LookupResult>, String>() {
                 @Override
                 protected List<CachedSequenceLookup.LookupResult> doInBackground() throws Exception {
                     if (!lookupEngine.isCacheAvailable()) {
@@ -315,12 +317,15 @@ public class SequenceLookupDialog extends JDialog {
                 @Override
                 protected void done() {
                     try {
-                        List<CachedSequenceLookup.LookupResult> results = get();
-                        displayBatchResults(results);
-                    } catch (Exception e) {
-                        statusLabel.setText("Search failed: " + e.getMessage());
+                        if (!isPresentationCurrent()) return;
+                        try {
+                            List<CachedSequenceLookup.LookupResult> results = get();
+                            displayBatchResults(results);
+                        } catch (Exception e) {
+                            statusLabel.setText("Search failed: " + e.getMessage());
+                        }
                     } finally {
-                        searchButton.setEnabled(true);
+                        searchButton.setEnabled(isPresentationCurrent());
                     }
                 }
             };

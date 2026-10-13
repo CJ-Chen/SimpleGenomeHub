@@ -4,6 +4,8 @@
  */
 package simplegenomehub.gui;
 
+import simplegenomehub.runtime.HubWorker;
+
 import simplegenomehub.model.*;
 import simplegenomehub.model.GeneAnnotationData.AnnotationType;
 import simplegenomehub.util.enrichment.*;
@@ -167,7 +169,7 @@ public class GOEnrichmentDialog extends JDialog {
         progressDialog.add(progressPanel);
         
         // 在后台线程执行初始化
-        SwingWorker<Boolean, String> initWorker = new SwingWorker<Boolean, String>() {
+        HubWorker<Boolean, String> initWorker = new HubWorker<Boolean, String>() {
             @Override
             protected Boolean doInBackground() throws Exception {
                 publish("Reading GO OBO file...");
@@ -197,26 +199,30 @@ public class GOEnrichmentDialog extends JDialog {
             @Override
             protected void done() {
                 try {
-                    Boolean success = get();
-                    progressDialog.dispose();
-                    
-                    if (success) {
-                        // 检查GO注释数据可用性
-                        checkGOAnnotationAvailability();
-                        statusLabel.setText("GO database initialized successfully");
-                    } else {
-                        statusLabel.setText("Warning: GO database initialization failed - some features may be limited");
+                    if (!isPresentationCurrent()) return;
+                    try {
+                        Boolean success = get();
+
+                        if (success) {
+                            // 检查GO注释数据可用性
+                            checkGOAnnotationAvailability();
+                            statusLabel.setText("GO database initialized successfully");
+                        } else {
+                            statusLabel.setText("Warning: GO database initialization failed - some features may be limited");
+                            statusLabel.setForeground(Color.ORANGE);
+                            // 仍然检查可用性以显示适当的警告
+                            checkGOAnnotationAvailability();
+                        }
+                    } catch (Exception e) {
+
+                        logger.log(Level.WARNING, "Failed to initialize GO database", e);
+                        statusLabel.setText("Warning: GO database initialization failed");
                         statusLabel.setForeground(Color.ORANGE);
-                        // 仍然检查可用性以显示适当的警告
+                        // 仍然检查可用性
                         checkGOAnnotationAvailability();
                     }
-                } catch (Exception e) {
+                } finally {
                     progressDialog.dispose();
-                    logger.log(Level.WARNING, "Failed to initialize GO database", e);
-                    statusLabel.setText("Warning: GO database initialization failed");
-                    statusLabel.setForeground(Color.ORANGE);
-                    // 仍然检查可用性
-                    checkGOAnnotationAvailability();
                 }
             }
         };
@@ -831,8 +837,8 @@ public class GOEnrichmentDialog extends JDialog {
         statusLabel.setText("Importing " + GeneSetFileSupport.extractDisplayName(selectedFile) + "...");
         statusLabel.setForeground(Color.BLUE);
 
-        SwingWorker<GeneSetImportSupport.ImportedGeneSet, Void> worker =
-            new SwingWorker<GeneSetImportSupport.ImportedGeneSet, Void>() {
+        HubWorker<GeneSetImportSupport.ImportedGeneSet, Void> worker =
+            new HubWorker<GeneSetImportSupport.ImportedGeneSet, Void>() {
                 @Override
                 protected GeneSetImportSupport.ImportedGeneSet doInBackground() throws Exception {
                     return GeneSetImportSupport.importIds(targetSpecies, selectedFile, GeneSetImportSupport.OutputIdType.GENE);
@@ -840,36 +846,39 @@ public class GOEnrichmentDialog extends JDialog {
 
                 @Override
                 protected void done() {
-                    importGeneSetComboBox.setEnabled(!availableGeneSetFiles.isEmpty());
-                    importGeneSetComboBox.setSelectedIndex(0);
-
                     try {
-                        GeneSetImportSupport.ImportedGeneSet importedGeneSet = get();
-                        List<String> importedIds = importedGeneSet.getIds();
-                        geneListArea.setText(String.join("\n", importedIds));
-                        geneListArea.setCaretPosition(0);
-                        statusLabel.setText("Imported " + importedIds.size() + " gene IDs from "
-                            + (importedGeneSet.getSetKind() == GeneSetFileSupport.SetKind.REGION ? "Region Set" : "Gene Set"));
-                        statusLabel.setForeground(Color.BLUE);
-                    } catch (Exception ex) {
-                        Throwable cause = ex instanceof java.util.concurrent.ExecutionException && ex.getCause() != null
-                            ? ex.getCause()
-                            : ex;
+                        if (!isPresentationCurrent()) return;
+                        try {
+                            GeneSetImportSupport.ImportedGeneSet importedGeneSet = get();
+                            List<String> importedIds = importedGeneSet.getIds();
+                            geneListArea.setText(String.join("\n", importedIds));
+                            geneListArea.setCaretPosition(0);
+                            statusLabel.setText("Imported " + importedIds.size() + " gene IDs from "
+                                + (importedGeneSet.getSetKind() == GeneSetFileSupport.SetKind.REGION ? "Region Set" : "Gene Set"));
+                            statusLabel.setForeground(Color.BLUE);
+                        } catch (Exception ex) {
+                            Throwable cause = ex instanceof java.util.concurrent.ExecutionException && ex.getCause() != null
+                                ? ex.getCause()
+                                : ex;
 
-                        String message = cause.getMessage() != null ? cause.getMessage() : "Unknown error";
-                        statusLabel.setText("Import failed");
-                        statusLabel.setForeground(Color.RED);
+                            String message = cause.getMessage() != null ? cause.getMessage() : "Unknown error";
+                            statusLabel.setText("Import failed");
+                            statusLabel.setForeground(Color.RED);
 
-                        int messageType = cause instanceof GeneSetImportSupport.NoGeneFoundException
-                            ? JOptionPane.INFORMATION_MESSAGE
-                            : JOptionPane.ERROR_MESSAGE;
+                            int messageType = cause instanceof GeneSetImportSupport.NoGeneFoundException
+                                ? JOptionPane.INFORMATION_MESSAGE
+                                : JOptionPane.ERROR_MESSAGE;
 
-                        JOptionPane.showMessageDialog(
-                            GOEnrichmentDialog.this,
-                            "Failed to import selected set:\n" + message,
-                            "Import Gene Set Failed",
-                            messageType
-                        );
+                            JOptionPane.showMessageDialog(
+                                GOEnrichmentDialog.this,
+                                "Failed to import selected set:\n" + message,
+                                "Import Gene Set Failed",
+                                messageType
+                            );
+                        }
+                    } finally {
+                        importGeneSetComboBox.setEnabled(isPresentationCurrent() && !availableGeneSetFiles.isEmpty());
+                        importGeneSetComboBox.setSelectedIndex(0);
                     }
                 }
             };
@@ -914,7 +923,7 @@ public class GOEnrichmentDialog extends JDialog {
         }
         
         // 在后台线程运行分析
-        SwingWorker<List<EnhancedEnrichmentResult>, Void> worker = new SwingWorker<List<EnhancedEnrichmentResult>, Void>() {
+        HubWorker<List<EnhancedEnrichmentResult>, Void> worker = new HubWorker<List<EnhancedEnrichmentResult>, Void>() {
             @Override
             protected List<EnhancedEnrichmentResult> doInBackground() throws Exception {
                 return performGOEnrichmentAnalysis(currentGeneList);
@@ -923,16 +932,19 @@ public class GOEnrichmentDialog extends JDialog {
             @Override
             protected void done() {
                 try {
-                    List<EnhancedEnrichmentResult> results = get();
-                    displayResults(results);
-                    
-                } catch (Exception e) {
-                    logger.log(Level.SEVERE, "GO enrichment analysis failed", e);
-                    showErrorMessage("GO enrichment analysis failed: " + e.getMessage());
+                    if (!isPresentationCurrent()) return;
+                    try {
+                        List<EnhancedEnrichmentResult> results = get();
+                        displayResults(results);
+
+                    } catch (Exception e) {
+                        logger.log(Level.SEVERE, "GO enrichment analysis failed", e);
+                        showErrorMessage("GO enrichment analysis failed: " + e.getMessage());
+                    }
                 } finally {
                     // 恢复UI状态
                     progressBar.setVisible(false);
-                    runAnalysisButton.setEnabled(true);
+                    runAnalysisButton.setEnabled(isPresentationCurrent());
                     statusLabel.setText("Analysis completed");
                     statusLabel.setForeground(Color.DARK_GRAY);
                 }

@@ -1128,10 +1128,13 @@ public class AnnotationDataPanel extends JDialog {
      * Import more annotations
      */
     private void importMoreAnnotations() {
+        final simplegenomehub.runtime.HubSession importSession = simplegenomehub.runtime.HubSession.getExplicitOwner(this);
+        final long importGeneration = importSession == null ? 0 : importSession.getGeneration();
         final AnnotationImportDialog dialog = new AnnotationImportDialog(this, targetSpecies);
         dialog.addWindowListener(new WindowAdapter() {
             @Override
             public void windowClosed(WindowEvent e) {
+                if (importSession != null && !importSession.accepts(importGeneration)) return;
                 if (!dialog.isImportSuccessful()) {
                     return;
                 }

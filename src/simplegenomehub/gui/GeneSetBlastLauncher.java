@@ -1,5 +1,7 @@
 package simplegenomehub.gui;
 
+import simplegenomehub.runtime.HubWorker;
+
 import simplegenomehub.blast.BlastConfig;
 import simplegenomehub.model.SpeciesInfo;
 import simplegenomehub.model.SpeciesManager;
@@ -63,7 +65,7 @@ final class GeneSetBlastLauncher {
         Window owner = SwingUtilities.getWindowAncestor(parentComponent);
         JDialog progressDialog = createProgressDialog(owner, sequenceType, geneSetFile.getName());
 
-        SwingWorker<PreparedBlastQuery, Void> worker = new SwingWorker<PreparedBlastQuery, Void>() {
+        HubWorker<PreparedBlastQuery, Void> worker = new HubWorker<PreparedBlastQuery, Void>() {
             @Override
             protected PreparedBlastQuery doInBackground() throws Exception {
                 String rawContent = GeneSetFileSupport.readGeneSetContent(geneSetFile);
@@ -107,26 +109,29 @@ final class GeneSetBlastLauncher {
 
             @Override
             protected void done() {
-                progressDialog.dispose();
-
                 try {
-                    PreparedBlastQuery prepared = get();
-                    BlastDialog dialog = new BlastDialog(owner, species, speciesManager,
-                        sequenceType, prepared.fastaText);
-                    dialog.setVisible(true);
+                    if (!isPresentationCurrent()) return;
+                    try {
+                        PreparedBlastQuery prepared = get();
+                        BlastDialog dialog = new BlastDialog(owner, species, speciesManager,
+                            sequenceType, prepared.fastaText);
+                        dialog.setVisible(true);
 
-                    if (!prepared.missingGeneIds.isEmpty()) {
+                        if (!prepared.missingGeneIds.isEmpty()) {
+                            JOptionPane.showMessageDialog(parentComponent,
+                                buildPartialSuccessMessage(prepared, sequenceType),
+                                "BLAST Query Prepared with Missing Sequences",
+                                JOptionPane.WARNING_MESSAGE);
+                        }
+                    } catch (Exception ex) {
+                        logger.warning("Failed to prepare BLAST query from gene set: " + ex.getMessage());
                         JOptionPane.showMessageDialog(parentComponent,
-                            buildPartialSuccessMessage(prepared, sequenceType),
-                            "BLAST Query Prepared with Missing Sequences",
-                            JOptionPane.WARNING_MESSAGE);
+                            "Failed to prepare BLAST query:\n" + ex.getMessage(),
+                            "Run BLAST Failed",
+                            JOptionPane.ERROR_MESSAGE);
                     }
-                } catch (Exception ex) {
-                    logger.warning("Failed to prepare BLAST query from gene set: " + ex.getMessage());
-                    JOptionPane.showMessageDialog(parentComponent,
-                        "Failed to prepare BLAST query:\n" + ex.getMessage(),
-                        "Run BLAST Failed",
-                        JOptionPane.ERROR_MESSAGE);
+                } finally {
+                    progressDialog.dispose();
                 }
             }
         };

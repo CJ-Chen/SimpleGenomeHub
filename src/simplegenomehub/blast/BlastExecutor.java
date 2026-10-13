@@ -65,6 +65,10 @@ public class BlastExecutor {
      * Execute BLAST query asynchronously
      */
     public CompletableFuture<BlastResult> executeBlastAsync(BlastQuery query) {
+        return executeBlastAsync(query, ignored -> { });
+    }
+
+    public CompletableFuture<BlastResult> executeBlastAsync(BlastQuery query, java.util.function.Consumer<String> progress) {
         CompletableFuture<BlastResult> result = new CompletableFuture<>();
         java.util.concurrent.atomic.AtomicReference<Thread> thread = new java.util.concurrent.atomic.AtomicReference<>();
         simplegenomehub.runtime.HubSession.Task lease = session == null ? null : session.beginTask("BLAST", () -> {
@@ -84,7 +88,7 @@ public class BlastExecutor {
                 try {
                     if (closed || result.isCancelled() || (session != null && !session.isActive()))
                         throw new InterruptedException("BLAST cancelled");
-                    result.complete(performBlastExecution(query));
+                    result.complete(performBlastExecution(query, progress));
                 } catch (InterruptedException | java.util.concurrent.CancellationException cancelled) {
                     result.cancel(false);
                 } catch (Exception failure) {
@@ -107,7 +111,7 @@ public class BlastExecutor {
     /**
      * Perform the actual BLAST execution
      */
-    private BlastResult performBlastExecution(BlastQuery query) throws Exception {
+    private BlastResult performBlastExecution(BlastQuery query, java.util.function.Consumer<String> progress) throws Exception {
         logger.info("Starting BLAST query: " + query.getQueryId());
         long startTime = System.currentTimeMillis();
         
@@ -116,22 +120,12 @@ public class BlastExecutor {
             throw new IllegalArgumentException("Invalid BLAST query");
         }
         
-        // 2. Ensure target database exists
-        BlastDatabase targetDb = dbManager.ensureDatabaseExists(
-            query.getTargetSpecies(), 
-            query.getTargetSequenceType()
-        );
-        
         // 3. Prepare query file
         File queryFile = query.getQueryFile();
         validateQueryFile(queryFile);
         
-        // 4. Determine BLAST type
-        BlastType blastType = determineBlastType(queryFile, targetDb);
-        logger.info("Auto-selected BLAST type: " + blastType.getCommand());
-        
         // 5. Execute BLAST using ProcessBuilder (more reliable than TBtools BlastOnTheFly)
-        BlastResult result = processExecutor.executeBlast(query);
+        BlastResult result = processExecutor.executeBlast(query, progress);
         
         // Alternative: Use TBtools BlastOnTheFly (commented out due to environment issues)
         // BlastResult result = performBlast(query, queryFile, targetDb, blastType);

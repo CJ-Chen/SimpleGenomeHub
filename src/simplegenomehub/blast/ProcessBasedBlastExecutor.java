@@ -42,10 +42,15 @@ public class ProcessBasedBlastExecutor {
      * Execute BLAST using ProcessBuilder with full environment control
      */
     public BlastResult executeBlast(BlastQuery query) throws Exception {
+        return executeBlast(query, ignored -> { });
+    }
+
+    public BlastResult executeBlast(BlastQuery query, java.util.function.Consumer<String> progress) throws Exception {
         logger.info("Starting ProcessBuilder-based BLAST execution: " + query.getQueryId());
         long startTime = System.currentTimeMillis();
         
         // 1. Ensure target database exists
+        progress.accept("Preparing BLAST database...");
         BlastDatabase targetDb = dbManager.ensureDatabaseExists(
             query.getTargetSpecies(), 
             query.getTargetSequenceType()
@@ -59,13 +64,10 @@ public class ProcessBasedBlastExecutor {
         BlastExecutor.BlastType blastType = determineBlastType(queryFile, targetDb);
         logger.info("Auto-selected BLAST type: " + blastType.getCommand());
         
-        // 4. Create makeblastdb if needed
-        if (!isDatabaseValid(targetDb)) {
-            createBlastDatabase(targetDb);
-        }
-        
         // 5. Execute BLAST query
+        progress.accept("Running " + blastType.getCommand() + "...");
         BlastResult result = executeBlastQuery(query, queryFile, targetDb, blastType);
+        result.setTargetDatabase(new File(targetDb.getDatabasePath()));
         
         // 6. Set execution time
         long duration = System.currentTimeMillis() - startTime;
@@ -104,7 +106,10 @@ public class ProcessBasedBlastExecutor {
                                         BlastDatabase targetDb, BlastExecutor.BlastType blastType) throws Exception {
         
         BlastParameters params = query.getParameters();
-        String blastCmd = config.resolveBlastCommand(blastType.getCommand());
+        simplegenomehub.runtime.HubToolResolver.ResolvedTool tool = simplegenomehub.runtime.HubToolResolver.resolveTool(
+            blastType.getCommand(), config.getBlastExecutablePath());
+        String blastCmd = tool.getExecutable();
+        logger.info("Using BLAST tool: " + tool);
         
         // Create output file
         File outputFile = File.createTempFile("blast_result_" + query.getQueryId(), ".xml");

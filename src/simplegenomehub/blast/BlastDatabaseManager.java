@@ -27,6 +27,7 @@ import java.util.logging.Logger;
 public class BlastDatabaseManager {
     
     private static final Logger logger = Logger.getLogger(BlastDatabaseManager.class.getName());
+    private static final ConcurrentMap<String, Object> BUILD_LOCKS = new ConcurrentHashMap<>();
     
     private final BlastConfig config;
     private final simplegenomehub.runtime.HubSession session;
@@ -137,35 +138,79 @@ public class BlastDatabaseManager {
      */
     private BlastDatabase createDatabase(SpeciesInfo species, SequenceType seqType, 
                                        File sourceFile, File dbDir) throws Exception {
-        
-        logger.info("Creating " + seqType + " database for " + species.getSpeciesName() + "...");
-        
-        // Ensure directory exists
-        if (!dbDir.exists() && !dbDir.mkdirs()) {
-            throw new IOException("Unable to create database directory: " + dbDir.getAbsolutePath());
+        // Multiple BLAST dialogs can request the same index. Publish only one complete directory.
+        synchronized (BUILD_LOCKS.computeIfAbsent(dbDir.getCanonicalPath(), ignored -> new Object())) {
+            BlastDatabase existing = loadDatabaseFromDisk(dbDir, seqType);
+            if (existing != null && existing.isUpToDate(sourceFile)) return existing;
+            java.nio.file.Path parent = dbDir.toPath().toAbsolutePath().getParent();
+            java.nio.file.Files.createDirectories(parent);
+            java.nio.file.Path staging = java.nio.file.Files.createTempDirectory(parent, ".sgh-blast-build-");
+            java.nio.file.Path backup = null;
+            boolean published = false;
+            try {
+                long startTime = System.currentTimeMillis();
+                simplegenomehub.runtime.HubToolResolver.ResolvedTool tool =
+                    simplegenomehub.runtime.HubToolResolver.resolveTool("makeblastdb", config.getBlastExecutablePath());
+                logger.info("Building BLAST database with " + tool);
+                createIndex(tool.getExecutable(), session, sourceFile, staging.toFile(),
+                    seqType.toString().toLowerCase(), seqType.getMolecularType());
+                checkCancelled();
+                java.nio.file.Path oldMetadata = dbDir.toPath().resolve("database.info");
+                if (java.nio.file.Files.isRegularFile(oldMetadata))
+                    java.nio.file.Files.copy(oldMetadata, staging.resolve("database.info"));
+                BlastDatabase database = new BlastDatabase(staging.toFile(), seqType, sourceFile);
+                if (!database.isValid()) throw new IOException("makeblastdb did not produce a complete database");
+                database.addMetadataChecked("creation_duration_ms", String.valueOf(System.currentTimeMillis() - startTime));
+                database.addMetadataChecked("species_name", species.getSpeciesName());
+                database.addMetadataChecked("species_version", species.getVersion());
+                database.addMetadataChecked("tool.path", tool.getExecutable());
+                database.addMetadataChecked("tool.source", tool.getSource());
+                database.addMetadataChecked("tool.version", tool.getVersion());
+                checkCancelled();
+                if (java.nio.file.Files.exists(dbDir.toPath())) {
+                    backup = parent.resolve(".sgh-blast-old-" + java.util.UUID.randomUUID());
+                    moveDirectory(dbDir.toPath(), backup);
+                }
+                try { moveDirectory(staging, dbDir.toPath()); }
+                catch (IOException failedPublish) {
+                    if (backup != null) { moveDirectory(backup, dbDir.toPath()); backup = null; }
+                    throw failedPublish;
+                }
+                published = true;
+                return BlastDatabase.loadFromDisk(dbDir, seqType);
+            } finally {
+                deleteScratch(staging);
+                // If restoring a failed publication also fails, preserve the old directory for recovery.
+                if (backup != null && published) deleteScratch(backup);
+            }
         }
-        
-        // Prepare database file
-        File dbFile = new File(dbDir, seqType.toString().toLowerCase());
-        
-        long startTime = System.currentTimeMillis();
-        createIndex(config, session, sourceFile, dbDir, dbFile.getName(), seqType.getMolecularType());
-        long duration = System.currentTimeMillis() - startTime;
-        
-        logger.info("Database creation completed: " + getDatabaseKey(species, seqType) + 
-                   " (duration: " + duration + "ms)");
-        
-        // Create and return database object
-        BlastDatabase database = new BlastDatabase(dbDir, seqType, sourceFile);
-        database.addMetadata("creation_duration_ms", String.valueOf(duration));
-        database.addMetadata("species_name", species.getSpeciesName());
-        database.addMetadata("species_version", species.getVersion());
-        
-        return database;
+    }
+
+    private void checkCancelled() throws InterruptedException {
+        if (Thread.currentThread().isInterrupted() || (session != null && !session.isActive()))
+            throw new InterruptedException("BLAST database creation cancelled");
+    }
+
+    private static void moveDirectory(java.nio.file.Path source, java.nio.file.Path target) throws IOException {
+        try { java.nio.file.Files.move(source, target, java.nio.file.StandardCopyOption.ATOMIC_MOVE); }
+        catch (java.nio.file.AtomicMoveNotSupportedException unsupported) { java.nio.file.Files.move(source, target); }
+    }
+
+    private static void deleteScratch(java.nio.file.Path directory) throws IOException {
+        if (!java.nio.file.Files.exists(directory)) return;
+        try (java.util.stream.Stream<java.nio.file.Path> files = java.nio.file.Files.walk(directory)) {
+            for (java.nio.file.Path path : (Iterable<java.nio.file.Path>) files.sorted(java.util.Comparator.reverseOrder())::iterator)
+                java.nio.file.Files.deleteIfExists(path);
+        }
     }
     
     /** NCBI BLAST parses -in/-out itself; use local ASCII names even when the data root contains spaces. */
     static void createIndex(BlastConfig config, simplegenomehub.runtime.HubSession session, File source,
+                            File directory, String name, BlastConfig.MolecularType molecularType) throws Exception {
+        createIndex(config.resolveBlastCommand("makeblastdb"), session, source, directory, name, molecularType);
+    }
+
+    private static void createIndex(String executable, simplegenomehub.runtime.HubSession session, File source,
                             File directory, String name, BlastConfig.MolecularType molecularType) throws Exception {
         java.nio.file.Path input = java.nio.file.Files.createTempFile(directory.toPath(), "sgh-input-", ".fa");
         try {
@@ -173,9 +218,9 @@ public class BlastDatabaseManager {
             try { java.nio.file.Files.createLink(input, source.toPath()); }
             catch (IOException | UnsupportedOperationException failure) { java.nio.file.Files.copy(source.toPath(), input); }
             biocjava.bioDoer.BLAST.ToolProcessRunner.Result completed = simplegenomehub.runtime.HubProcessRunner.run(session,
-                new ProcessBuilder(config.resolveBlastCommand("makeblastdb"), "-in", input.getFileName().toString(),
+                new ProcessBuilder(executable, "-in", input.getFileName().toString(),
                     "-dbtype", molecularType == BlastConfig.MolecularType.PROTEIN ? "prot" : "nucl",
-                    "-out", name, "-parse_seqids").directory(directory), 5, TimeUnit.MINUTES);
+                    "-out", name, "-blastdb_version", "4").directory(directory), 5, TimeUnit.MINUTES);
             if (completed.exitCode != 0) throw new IOException("makeblastdb failed: " + completed.output);
         } finally { java.nio.file.Files.deleteIfExists(input); }
     }

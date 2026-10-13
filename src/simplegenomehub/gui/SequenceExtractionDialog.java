@@ -3,6 +3,8 @@
  */
 package simplegenomehub.gui;
 
+import simplegenomehub.runtime.HubWorker;
+
 import simplegenomehub.model.SpeciesInfo;
 import simplegenomehub.util.fileio.TBtoolsSequenceExtractor;
 import simplegenomehub.util.fileio.RepresentativeTranscriptSelector;
@@ -583,7 +585,7 @@ public class SequenceExtractionDialog extends JDialog {
             return;
         }
         
-        SwingWorker<Boolean, String> worker = new SwingWorker<Boolean, String>() {
+        HubWorker<Boolean, String> worker = new HubWorker<Boolean, String>() {
             @Override
             protected Boolean doInBackground() throws Exception {
                 try {
@@ -730,20 +732,23 @@ public class SequenceExtractionDialog extends JDialog {
             @Override
             protected void done() {
                 try {
-                    boolean success = get();
-                    if (success) {
-                        updateStatus("Extraction completed successfully");
-                        JOptionPane.showMessageDialog(SequenceExtractionDialog.this,
-                            "Sequence extraction completed successfully!\n" +
-                            "Files saved to: " + outputDir.getAbsolutePath(),
-                            "Extraction Complete", JOptionPane.INFORMATION_MESSAGE);
-                    } else {
-                        updateStatus("Extraction completed with errors");
+                    if (!isPresentationCurrent()) return;
+                    try {
+                        boolean success = get();
+                        if (success) {
+                            updateStatus("Extraction completed successfully");
+                            JOptionPane.showMessageDialog(SequenceExtractionDialog.this,
+                                "Sequence extraction completed successfully!\n" +
+                                "Files saved to: " + outputDir.getAbsolutePath(),
+                                "Extraction Complete", JOptionPane.INFORMATION_MESSAGE);
+                        } else {
+                            updateStatus("Extraction completed with errors");
+                        }
+                    } catch (Exception e) {
+                        updateStatus("Extraction failed: " + e.getMessage());
                     }
-                } catch (Exception e) {
-                    updateStatus("Extraction failed: " + e.getMessage());
                 } finally {
-                    setControlsEnabled(true);
+                    setControlsEnabled(isPresentationCurrent());
                     progressBar.setValue(0);
                     progressBar.setString("");
                 }
@@ -914,7 +919,7 @@ public class SequenceExtractionDialog extends JDialog {
             return;
         }
         
-        SwingWorker<Boolean, String> worker = new SwingWorker<Boolean, String>() {
+        HubWorker<Boolean, String> worker = new HubWorker<Boolean, String>() {
             @Override
             protected Boolean doInBackground() throws Exception {
                 try {
@@ -967,20 +972,23 @@ public class SequenceExtractionDialog extends JDialog {
             @Override
             protected void done() {
                 try {
-                    boolean success = get();
-                    if (success) {
-                        updateStatus("GFF3 generation completed successfully");
-                        JOptionPane.showMessageDialog(SequenceExtractionDialog.this,
-                            "Representative transcript GFF3 generated successfully!\n" +
-                            "File saved to: " + outputDir.getAbsolutePath(),
-                            "Generation Complete", JOptionPane.INFORMATION_MESSAGE);
-                    } else {
-                        updateStatus("GFF3 generation failed");
+                    if (!isPresentationCurrent()) return;
+                    try {
+                        boolean success = get();
+                        if (success) {
+                            updateStatus("GFF3 generation completed successfully");
+                            JOptionPane.showMessageDialog(SequenceExtractionDialog.this,
+                                "Representative transcript GFF3 generated successfully!\n" +
+                                "File saved to: " + outputDir.getAbsolutePath(),
+                                "Generation Complete", JOptionPane.INFORMATION_MESSAGE);
+                        } else {
+                            updateStatus("GFF3 generation failed");
+                        }
+                    } catch (Exception e) {
+                        updateStatus("GFF3 generation error: " + e.getMessage());
                     }
-                } catch (Exception e) {
-                    updateStatus("GFF3 generation error: " + e.getMessage());
                 } finally {
-                    setControlsEnabled(true);
+                    setControlsEnabled(isPresentationCurrent());
                     progressBar.setValue(0);
                     progressBar.setString("");
                 }

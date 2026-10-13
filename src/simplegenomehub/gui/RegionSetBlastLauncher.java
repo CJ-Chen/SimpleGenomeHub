@@ -1,5 +1,7 @@
 package simplegenomehub.gui;
 
+import simplegenomehub.runtime.HubWorker;
+
 import simplegenomehub.blast.BlastConfig;
 import simplegenomehub.model.SpeciesInfo;
 import simplegenomehub.model.SpeciesManager;
@@ -38,7 +40,7 @@ final class RegionSetBlastLauncher {
             "Preparing " + getSequenceDisplayName(sequenceType) + " BLAST Query",
             "Reading Region Set and resolving overlapping genes...");
 
-        SwingWorker<PreparedBlastQuery, Void> worker = new SwingWorker<PreparedBlastQuery, Void>() {
+        HubWorker<PreparedBlastQuery, Void> worker = new HubWorker<PreparedBlastQuery, Void>() {
             @Override
             protected PreparedBlastQuery doInBackground() throws Exception {
                 List<String> overlappingGeneIds = GeneSetImportSupport.collectOverlappingGeneIds(species, regionSetFile);
@@ -50,18 +52,22 @@ final class RegionSetBlastLauncher {
 
             @Override
             protected void done() {
-                progressDialog.dispose();
                 try {
-                    PreparedBlastQuery prepared = get();
-                    openBlastDialog(owner, species, speciesManager, sequenceType, prepared.fastaText);
-                    if (!prepared.missingIds.isEmpty()) {
-                        JOptionPane.showMessageDialog(parentComponent,
-                            buildPartialSuccessMessage(prepared, sequenceType),
-                            "BLAST Query Prepared with Missing Sequences",
-                            JOptionPane.WARNING_MESSAGE);
+                    if (!isPresentationCurrent()) return;
+                    try {
+                        PreparedBlastQuery prepared = get();
+                        openBlastDialog(owner, species, speciesManager, sequenceType, prepared.fastaText);
+                        if (!prepared.missingIds.isEmpty()) {
+                            JOptionPane.showMessageDialog(parentComponent,
+                                buildPartialSuccessMessage(prepared, sequenceType),
+                                "BLAST Query Prepared with Missing Sequences",
+                                JOptionPane.WARNING_MESSAGE);
+                        }
+                    } catch (Exception ex) {
+                        handleBlastPreparationException(parentComponent, "prepare BLAST query from region set", ex);
                     }
-                } catch (Exception ex) {
-                    handleBlastPreparationException(parentComponent, "prepare BLAST query from region set", ex);
+                } finally {
+                    progressDialog.dispose();
                 }
             }
         };
@@ -81,7 +87,7 @@ final class RegionSetBlastLauncher {
             "Preparing Region Sequence BLAST Query",
             "Reading Region Set and extracting genomic sequences...");
 
-        SwingWorker<String, Void> worker = new SwingWorker<String, Void>() {
+        HubWorker<String, Void> worker = new HubWorker<String, Void>() {
             @Override
             protected String doInBackground() throws Exception {
                 List<GeneSetFileSupport.RegionEntry> regionEntries = loadRegionEntries(regionSetFile);
@@ -123,12 +129,16 @@ final class RegionSetBlastLauncher {
 
             @Override
             protected void done() {
-                progressDialog.dispose();
                 try {
-                    String fastaText = get();
-                    openBlastDialog(owner, species, speciesManager, BlastConfig.SequenceType.GENOME, fastaText);
-                } catch (Exception ex) {
-                    handleBlastPreparationException(parentComponent, "prepare region sequence BLAST query", ex);
+                    if (!isPresentationCurrent()) return;
+                    try {
+                        String fastaText = get();
+                        openBlastDialog(owner, species, speciesManager, BlastConfig.SequenceType.GENOME, fastaText);
+                    } catch (Exception ex) {
+                        handleBlastPreparationException(parentComponent, "prepare region sequence BLAST query", ex);
+                    }
+                } finally {
+                    progressDialog.dispose();
                 }
             }
         };

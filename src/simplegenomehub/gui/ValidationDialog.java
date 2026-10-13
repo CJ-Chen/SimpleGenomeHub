@@ -3,6 +3,8 @@
  */
 package simplegenomehub.gui;
 
+import simplegenomehub.runtime.HubWorker;
+
 import simplegenomehub.model.SpeciesInfo;
 import simplegenomehub.model.SpeciesManager;
 import simplegenomehub.util.validation.DataValidator;
@@ -303,7 +305,7 @@ public class ValidationDialog extends JDialog {
         statusLabel.setText("Validating species data...");
         progressBar.setValue(0);
         
-        SwingWorker<Void, String> worker = new SwingWorker<Void, String>() {
+        HubWorker<Void, String> worker = new HubWorker<Void, String>() {
             @Override
             protected Void doInBackground() throws Exception {
                 
@@ -329,29 +331,32 @@ public class ValidationDialog extends JDialog {
             @Override
             protected void done() {
                 try {
-                    get(); // Check for exceptions
-                    
-                    // Update table
-                    selectedSpecies.clear();
-                    selectedSpecies.addAll(selected);
-                    tableModel.fireTableDataChanged();
-                    
-                    // Generate report
-                    String report = DataValidator.generateValidationReport(validationResults);
-                    reportArea.setText(report);
-                    
-                    // Update status
-                    int validCount = (int) validationResults.stream().filter(DataValidator.ValidationResult::isValid).count();
-                    statusLabel.setText(String.format("Validation complete: %d of %d species valid", 
-                        validCount, validationResults.size()));
-                    
-                } catch (Exception e) {
-                    statusLabel.setText("Validation failed: " + e.getMessage());
-                    JOptionPane.showMessageDialog(ValidationDialog.this,
-                        "Validation error: " + e.getMessage(),
-                        "Validation Error", JOptionPane.ERROR_MESSAGE);
+                    if (!isPresentationCurrent()) return;
+                    try {
+                        get(); // Check for exceptions
+
+                        // Update table
+                        selectedSpecies.clear();
+                        selectedSpecies.addAll(selected);
+                        tableModel.fireTableDataChanged();
+
+                        // Generate report
+                        String report = DataValidator.generateValidationReport(validationResults);
+                        reportArea.setText(report);
+
+                        // Update status
+                        int validCount = (int) validationResults.stream().filter(DataValidator.ValidationResult::isValid).count();
+                        statusLabel.setText(String.format("Validation complete: %d of %d species valid",
+                            validCount, validationResults.size()));
+
+                    } catch (Exception e) {
+                        statusLabel.setText("Validation failed: " + e.getMessage());
+                        JOptionPane.showMessageDialog(ValidationDialog.this,
+                            "Validation error: " + e.getMessage(),
+                            "Validation Error", JOptionPane.ERROR_MESSAGE);
+                    }
                 } finally {
-                    setControlsEnabled(true);
+                    setControlsEnabled(isPresentationCurrent());
                     progressBar.setValue(0);
                     progressBar.setString("");
                 }
@@ -407,7 +412,7 @@ public class ValidationDialog extends JDialog {
         statusLabel.setText("Repairing species data...");
         progressBar.setValue(0);
         
-        SwingWorker<Void, String> worker = new SwingWorker<Void, String>() {
+        HubWorker<Void, String> worker = new HubWorker<Void, String>() {
             @Override
             protected Void doInBackground() throws Exception {
                 
@@ -441,29 +446,32 @@ public class ValidationDialog extends JDialog {
             @Override
             protected void done() {
                 try {
-                    get(); // Check for exceptions
-                    
-                    // Update table
-                    tableModel.fireTableDataChanged();
-                    
-                    // Generate repair report
-                    String repairReport = DataRepairer.generateRepairReport(repairResults);
-                    String validationReport = DataValidator.generateValidationReport(validationResults);
-                    
-                    reportArea.setText("REPAIR RESULTS:\n" + repairReport + "\n\nUPDATED VALIDATION:\n" + validationReport);
-                    
-                    // Update status
-                    int repairedCount = (int) repairResults.stream().filter(r -> r.getRepairCount() > 0).count();
-                    statusLabel.setText(String.format("Repair complete: %d species processed, %d repaired", 
-                        repairResults.size(), repairedCount));
-                    
-                } catch (Exception e) {
-                    statusLabel.setText("Repair failed: " + e.getMessage());
-                    JOptionPane.showMessageDialog(ValidationDialog.this,
-                        "Repair error: " + e.getMessage(),
-                        "Repair Error", JOptionPane.ERROR_MESSAGE);
+                    if (!isPresentationCurrent()) return;
+                    try {
+                        get(); // Check for exceptions
+
+                        // Update table
+                        tableModel.fireTableDataChanged();
+
+                        // Generate repair report
+                        String repairReport = DataRepairer.generateRepairReport(repairResults);
+                        String validationReport = DataValidator.generateValidationReport(validationResults);
+
+                        reportArea.setText("REPAIR RESULTS:\n" + repairReport + "\n\nUPDATED VALIDATION:\n" + validationReport);
+
+                        // Update status
+                        int repairedCount = (int) repairResults.stream().filter(r -> r.getRepairCount() > 0).count();
+                        statusLabel.setText(String.format("Repair complete: %d species processed, %d repaired",
+                            repairResults.size(), repairedCount));
+
+                    } catch (Exception e) {
+                        statusLabel.setText("Repair failed: " + e.getMessage());
+                        JOptionPane.showMessageDialog(ValidationDialog.this,
+                            "Repair error: " + e.getMessage(),
+                            "Repair Error", JOptionPane.ERROR_MESSAGE);
+                    }
                 } finally {
-                    setControlsEnabled(true);
+                    setControlsEnabled(isPresentationCurrent());
                     progressBar.setValue(0);
                     progressBar.setString("");
                 }

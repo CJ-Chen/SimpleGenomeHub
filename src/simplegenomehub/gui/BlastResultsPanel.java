@@ -4,6 +4,8 @@
  */
 package simplegenomehub.gui;
 
+import simplegenomehub.runtime.HubWorker;
+
 import simplegenomehub.blast.model.BlastResult;
 import simplegenomehub.blast.model.BlastResult.BlastHit;
 import simplegenomehub.blast.model.BlastQuery;
@@ -1003,7 +1005,7 @@ public class BlastResultsPanel extends JPanel {
 
         // Step 2: Execute tree building in background
         final String selectedQueryId = treeQueryId;
-        SwingWorker<File, Void> worker = new SwingWorker<File, Void>() {
+        HubWorker<File, Void> worker = new HubWorker<File, Void>() {
             @Override
             protected File doInBackground() throws Exception {
                 return executeTreeBuilding(n, selectedQueryId);
@@ -1011,6 +1013,7 @@ public class BlastResultsPanel extends JPanel {
 
             @Override
             protected void done() {
+                if (!isPresentationCurrent()) return;
                 try {
                     File treeFile = get();
                     if (treeFile != null && treeFile.exists()) {

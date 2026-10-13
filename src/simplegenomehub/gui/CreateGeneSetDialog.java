@@ -1,5 +1,7 @@
 package simplegenomehub.gui;
 
+import simplegenomehub.runtime.HubWorker;
+
 import simplegenomehub.model.SpeciesInfo;
 
 import javax.swing.*;
@@ -19,7 +21,7 @@ final class CreateGeneSetDialog extends JDialog {
     private final JTextField geneSetNameField;
     private final JTextArea geneIdsArea;
     private final JButton createButton;
-    private boolean geneSetCreated;
+    private volatile boolean geneSetCreated;
 
     CreateGeneSetDialog(Window parent, SpeciesInfo species, Runnable onCreateSuccess) {
         super(parent, "Create a Gene Set", ModalityType.MODELESS);
@@ -176,48 +178,58 @@ final class CreateGeneSetDialog extends JDialog {
 
         setControlsEnabled(false);
 
-        SwingWorker<GeneSetGeneIdValidationSupport.ValidationResult, Void> worker =
-            new SwingWorker<GeneSetGeneIdValidationSupport.ValidationResult, Void>() {
+        HubWorker<GeneSetGeneIdValidationSupport.ValidationResult, Void> worker =
+            new HubWorker<GeneSetGeneIdValidationSupport.ValidationResult, Void>() {
             @Override
             protected GeneSetGeneIdValidationSupport.ValidationResult doInBackground() throws Exception {
-                return GeneSetGeneIdValidationSupport.validateGeneIds(species, geneIds);
+                GeneSetGeneIdValidationSupport.ValidationResult validationResult =
+                    GeneSetGeneIdValidationSupport.validateGeneIds(species, geneIds);
+                if (validationResult.getMissingGeneIds().isEmpty()) {
+                    if (isCancelled()) throw new java.util.concurrent.CancellationException();
+                    GeneSetFileSupport.writeGeneSetFile(outputFile, validationResult.getResolvedGeneIds());
+                    geneSetCreated = true;
+                }
+                return validationResult;
             }
 
             @Override
             protected void done() {
-                if (!CreateGeneSetDialog.this.isDisplayable()) {
-                    return;
-                }
-
                 try {
-                    GeneSetGeneIdValidationSupport.ValidationResult validationResult = get();
-                    if (validationResult.hasIssues()) {
-                        GeneSetGeneIdValidationSupport.showValidationResult(
-                            CreateGeneSetDialog.this, validationResult);
-                    }
-
-                    if (!validationResult.getMissingGeneIds().isEmpty()) {
+                    if (!isPresentationCurrent()) return;
+                    if (!CreateGeneSetDialog.this.isDisplayable()) {
                         return;
                     }
 
-                    GeneSetFileSupport.writeGeneSetFile(outputFile, validationResult.getResolvedGeneIds());
-                    geneSetCreated = true;
-                    JOptionPane.showMessageDialog(CreateGeneSetDialog.this,
-                        "Gene set created successfully:\n" + outputFile.getName(),
-                        "Create Complete",
-                        JOptionPane.INFORMATION_MESSAGE);
-                    dispose();
-                    if (onCreateSuccess != null) {
-                        onCreateSuccess.run();
+                    try {
+                        GeneSetGeneIdValidationSupport.ValidationResult validationResult = get();
+                        if (validationResult.hasIssues()) {
+                            GeneSetGeneIdValidationSupport.showValidationResult(
+                                CreateGeneSetDialog.this, validationResult);
+                        }
+
+                        if (!validationResult.getMissingGeneIds().isEmpty()) {
+                            return;
+                        }
+
+                        // The background task committed the validated file before completing.
+                        geneSetCreated = true;
+                        JOptionPane.showMessageDialog(CreateGeneSetDialog.this,
+                            "Gene set created successfully:\n" + outputFile.getName(),
+                            "Create Complete",
+                            JOptionPane.INFORMATION_MESSAGE);
+                        dispose();
+                        if (onCreateSuccess != null) {
+                            onCreateSuccess.run();
+                        }
+                    } catch (Exception ex) {
+                        logger.warning("Failed to create gene set: " + ex.getMessage());
+                        JOptionPane.showMessageDialog(CreateGeneSetDialog.this,
+                            "Failed to create gene set:\n" + ex.getMessage(),
+                            "Create Failed",
+                            JOptionPane.ERROR_MESSAGE);
                     }
-                } catch (Exception ex) {
-                    logger.warning("Failed to create gene set: " + ex.getMessage());
-                    JOptionPane.showMessageDialog(CreateGeneSetDialog.this,
-                        "Failed to create gene set:\n" + ex.getMessage(),
-                        "Create Failed",
-                        JOptionPane.ERROR_MESSAGE);
                 } finally {
-                    setControlsEnabled(true);
+                    setControlsEnabled(isPresentationCurrent());
                 }
             }
         };

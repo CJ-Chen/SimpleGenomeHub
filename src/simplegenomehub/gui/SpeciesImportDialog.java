@@ -3,6 +3,8 @@
  */
 package simplegenomehub.gui;
 
+import simplegenomehub.runtime.HubWorker;
+
 import simplegenomehub.model.*;
 import simplegenomehub.util.fileio.*;
 import simplegenomehub.model.SpeciesMetadata;
@@ -412,7 +414,7 @@ public class SpeciesImportDialog extends JDialog {
         updateStatus("Validating files...");
         progressBar.setValue(0);
         
-        SwingWorker<Boolean, String> worker = new SwingWorker<Boolean, String>() {
+        HubWorker<Boolean, String> worker = new HubWorker<Boolean, String>() {
             @Override
             protected Boolean doInBackground() throws Exception {
                 publish("Starting file validation...");
@@ -519,20 +521,24 @@ public class SpeciesImportDialog extends JDialog {
             @Override
             protected void done() {
                 try {
-                    boolean valid = get();
-                    if (valid) {
-                        updateStatus("Files validated successfully");
-                        importButton.setEnabled(true);
-                    } else {
-                        updateStatus("File validation failed");
+                    if (!isPresentationCurrent()) return;
+                    try {
+                        boolean valid = get();
+                        if (valid) {
+                            updateStatus("Files validated successfully");
+                            importButton.setEnabled(true);
+                        } else {
+                            updateStatus("File validation failed");
+                            importButton.setEnabled(false);
+                        }
+                    } catch (Exception e) {
+                        updateStatus("Validation error: " + e.getMessage());
                         importButton.setEnabled(false);
                     }
-                } catch (Exception e) {
-                    updateStatus("Validation error: " + e.getMessage());
-                    importButton.setEnabled(false);
+                } finally {
+                    progressBar.setValue(0);
+                    progressBar.setString("");
                 }
-                progressBar.setValue(0);
-                progressBar.setString("");
             }
         };
         
@@ -576,7 +582,7 @@ public class SpeciesImportDialog extends JDialog {
         final String finalVersion = version;
         final String finalNotes = notes;
         
-        SwingWorker<Boolean, String> worker = new SwingWorker<Boolean, String>() {
+        HubWorker<Boolean, String> worker = new HubWorker<Boolean, String>() {
             @Override
             protected Boolean doInBackground() throws Exception {
                 try {
@@ -697,23 +703,27 @@ public class SpeciesImportDialog extends JDialog {
             @Override
             protected void done() {
                 try {
-                    boolean success = get();
-                    if (success) {
-                        updateStatus("Import completed successfully");
-                        JOptionPane.showMessageDialog(SpeciesImportDialog.this,
-                            "Species imported successfully!",
-                            "Import Complete", JOptionPane.INFORMATION_MESSAGE);
-                        dispose();
-                    } else {
-                        updateStatus("Import failed");
+                    if (!isPresentationCurrent()) return;
+                    try {
+                        boolean success = get();
+                        if (success) {
+                            updateStatus("Import completed successfully");
+                            JOptionPane.showMessageDialog(SpeciesImportDialog.this,
+                                "Species imported successfully!",
+                                "Import Complete", JOptionPane.INFORMATION_MESSAGE);
+                            dispose();
+                        } else {
+                            updateStatus("Import failed");
+                            setControlsEnabled(true);
+                        }
+                    } catch (Exception e) {
+                        updateStatus("Import error: " + e.getMessage());
                         setControlsEnabled(true);
                     }
-                } catch (Exception e) {
-                    updateStatus("Import error: " + e.getMessage());
-                    setControlsEnabled(true);
+                } finally {
+                    progressBar.setValue(0);
+                    progressBar.setString("");
                 }
-                progressBar.setValue(0);
-                progressBar.setString("");
             }
         };
         
@@ -750,7 +760,7 @@ public class SpeciesImportDialog extends JDialog {
         updateStatus("Validating files...");
         progressBar.setValue(0);
 
-        SwingWorker<Boolean, String> worker = new SwingWorker<Boolean, String>() {
+        HubWorker<Boolean, String> worker = new HubWorker<Boolean, String>() {
             @Override
             protected Boolean doInBackground() throws Exception {
                 publish("Starting file validation...");
@@ -872,20 +882,24 @@ public class SpeciesImportDialog extends JDialog {
             @Override
             protected void done() {
                 try {
-                    boolean valid = get();
-                    if (valid) {
-                        updateStatus("Files validated successfully");
-                        importButton.setEnabled(true);
-                    } else {
-                        updateStatus("File validation failed");
+                    if (!isPresentationCurrent()) return;
+                    try {
+                        boolean valid = get();
+                        if (valid) {
+                            updateStatus("Files validated successfully");
+                            importButton.setEnabled(true);
+                        } else {
+                            updateStatus("File validation failed");
+                            importButton.setEnabled(false);
+                        }
+                    } catch (Exception e) {
+                        updateStatus("Validation error: " + e.getMessage());
                         importButton.setEnabled(false);
                     }
-                } catch (Exception e) {
-                    updateStatus("Validation error: " + e.getMessage());
-                    importButton.setEnabled(false);
+                } finally {
+                    progressBar.setValue(0);
+                    progressBar.setString("");
                 }
-                progressBar.setValue(0);
-                progressBar.setString("");
             }
         };
 
@@ -944,7 +958,7 @@ public class SpeciesImportDialog extends JDialog {
             validatedAnnotationBytes, validatedAnnotationBytes.length);
         final String finalAnnotationFileName = validatedAnnotationFileName;
 
-        SwingWorker<Boolean, String> worker = new SwingWorker<Boolean, String>() {
+        HubWorker<Boolean, String> worker = new HubWorker<Boolean, String>() {
             @Override
             protected Boolean doInBackground() throws Exception {
                 try {
@@ -1045,24 +1059,28 @@ public class SpeciesImportDialog extends JDialog {
             @Override
             protected void done() {
                 try {
-                    boolean success = get();
-                    if (success) {
-                        clearPreparedAnnotationState();
-                        updateStatus("Import completed successfully");
-                        JOptionPane.showMessageDialog(SpeciesImportDialog.this,
-                            "Species imported successfully!",
-                            "Import Complete", JOptionPane.INFORMATION_MESSAGE);
-                        dispose();
-                    } else {
-                        updateStatus("Import failed");
+                    if (!isPresentationCurrent()) return;
+                    try {
+                        boolean success = get();
+                        if (success) {
+                            clearPreparedAnnotationState();
+                            updateStatus("Import completed successfully");
+                            JOptionPane.showMessageDialog(SpeciesImportDialog.this,
+                                "Species imported successfully!",
+                                "Import Complete", JOptionPane.INFORMATION_MESSAGE);
+                            dispose();
+                        } else {
+                            updateStatus("Import failed");
+                            setControlsEnabled(true);
+                        }
+                    } catch (Exception e) {
+                        updateStatus("Import error: " + e.getMessage());
                         setControlsEnabled(true);
                     }
-                } catch (Exception e) {
-                    updateStatus("Import error: " + e.getMessage());
-                    setControlsEnabled(true);
+                } finally {
+                    progressBar.setValue(0);
+                    progressBar.setString("");
                 }
-                progressBar.setValue(0);
-                progressBar.setString("");
             }
         };
 

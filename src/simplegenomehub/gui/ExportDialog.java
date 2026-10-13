@@ -3,6 +3,8 @@
  */
 package simplegenomehub.gui;
 
+import simplegenomehub.runtime.HubWorker;
+
 import simplegenomehub.model.SpeciesInfo;
 import simplegenomehub.util.export.DataExporter;
 import javax.swing.*;
@@ -375,7 +377,7 @@ public class ExportDialog extends JDialog {
         progressBar.setValue(0);
         
         // Perform export in background
-        SwingWorker<Boolean, String> worker = new SwingWorker<Boolean, String>() {
+        HubWorker<Boolean, String> worker = new HubWorker<Boolean, String>() {
             @Override
             protected Boolean doInBackground() throws Exception {
                 try {
@@ -422,20 +424,23 @@ public class ExportDialog extends JDialog {
             @Override
             protected void done() {
                 try {
-                    boolean success = get();
-                    if (success) {
-                        updateStatus("Export completed successfully");
-                        JOptionPane.showMessageDialog(ExportDialog.this,
-                            "Export completed successfully!\n" +
-                            "Files saved to: " + outputDir.getAbsolutePath(),
-                            "Export Complete", JOptionPane.INFORMATION_MESSAGE);
-                    } else {
-                        updateStatus("Export completed with errors");
+                    if (!isPresentationCurrent()) return;
+                    try {
+                        boolean success = get();
+                        if (success) {
+                            updateStatus("Export completed successfully");
+                            JOptionPane.showMessageDialog(ExportDialog.this,
+                                "Export completed successfully!\n" +
+                                "Files saved to: " + outputDir.getAbsolutePath(),
+                                "Export Complete", JOptionPane.INFORMATION_MESSAGE);
+                        } else {
+                            updateStatus("Export completed with errors");
+                        }
+                    } catch (Exception e) {
+                        updateStatus("Export failed: " + e.getMessage());
                     }
-                } catch (Exception e) {
-                    updateStatus("Export failed: " + e.getMessage());
                 } finally {
-                    setControlsEnabled(true);
+                    setControlsEnabled(isPresentationCurrent());
                     progressBar.setValue(0);
                     progressBar.setString("");
                 }

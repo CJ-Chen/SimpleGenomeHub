@@ -1,5 +1,7 @@
 package simplegenomehub.gui;
 
+import simplegenomehub.runtime.HubWorker;
+
 import simplegenomehub.model.SpeciesInfo;
 
 import javax.swing.*;
@@ -20,7 +22,7 @@ final class EditGeneSetDialog extends JDialog {
     private final JTextField geneSetNameField;
     private final JTextArea geneIdsArea;
     private final JButton saveButton;
-    private boolean geneSetUpdated;
+    private volatile boolean geneSetUpdated;
 
     EditGeneSetDialog(Window parent, SpeciesInfo species, File geneSetFile, Runnable onUpdateSuccess) {
         super(parent, "Edit Gene Set", ModalityType.MODELESS);
@@ -184,52 +186,62 @@ final class EditGeneSetDialog extends JDialog {
 
         setControlsEnabled(false);
 
-        SwingWorker<GeneSetGeneIdValidationSupport.ValidationResult, Void> worker =
-            new SwingWorker<GeneSetGeneIdValidationSupport.ValidationResult, Void>() {
+        HubWorker<GeneSetGeneIdValidationSupport.ValidationResult, Void> worker =
+            new HubWorker<GeneSetGeneIdValidationSupport.ValidationResult, Void>() {
             @Override
             protected GeneSetGeneIdValidationSupport.ValidationResult doInBackground() throws Exception {
-                return GeneSetGeneIdValidationSupport.validateGeneIds(species, geneIds);
-            }
-
-            @Override
-            protected void done() {
-                if (!EditGeneSetDialog.this.isDisplayable()) {
-                    return;
-                }
-
-                try {
-                    GeneSetGeneIdValidationSupport.ValidationResult validationResult = get();
-                    if (validationResult.hasIssues()) {
-                        GeneSetGeneIdValidationSupport.showValidationResult(
-                            EditGeneSetDialog.this, validationResult);
-                    }
-
-                    if (!validationResult.getMissingGeneIds().isEmpty()) {
-                        return;
-                    }
-
+                GeneSetGeneIdValidationSupport.ValidationResult validationResult =
+                    GeneSetGeneIdValidationSupport.validateGeneIds(species, geneIds);
+                if (validationResult.getMissingGeneIds().isEmpty()) {
+                    if (isCancelled()) throw new java.util.concurrent.CancellationException();
                     GeneSetFileSupport.writeGeneSetFile(targetFile, validationResult.getResolvedGeneIds());
                     if (!targetFile.equals(originalFile) && originalFile.exists() && !originalFile.delete()) {
                         throw new IllegalStateException("Failed to remove the original gene set file.");
                     }
-
                     geneSetUpdated = true;
-                    JOptionPane.showMessageDialog(EditGeneSetDialog.this,
-                        "Gene set updated successfully:\n" + targetFile.getName(),
-                        "Save Complete",
-                        JOptionPane.INFORMATION_MESSAGE);
-                    dispose();
-                    if (onUpdateSuccess != null) {
-                        onUpdateSuccess.run();
+                }
+                return validationResult;
+            }
+
+            @Override
+            protected void done() {
+                try {
+                    if (!isPresentationCurrent()) return;
+                    if (!EditGeneSetDialog.this.isDisplayable()) {
+                        return;
                     }
-                } catch (Exception ex) {
-                    logger.warning("Failed to update gene set: " + ex.getMessage());
-                    JOptionPane.showMessageDialog(EditGeneSetDialog.this,
-                        "Failed to update gene set:\n" + ex.getMessage(),
-                        "Save Failed",
-                        JOptionPane.ERROR_MESSAGE);
+
+                    try {
+                        GeneSetGeneIdValidationSupport.ValidationResult validationResult = get();
+                        if (validationResult.hasIssues()) {
+                            GeneSetGeneIdValidationSupport.showValidationResult(
+                                EditGeneSetDialog.this, validationResult);
+                        }
+
+                        if (!validationResult.getMissingGeneIds().isEmpty()) {
+                            return;
+                        }
+
+                        // The background task committed the validated file before completing.
+
+                        geneSetUpdated = true;
+                        JOptionPane.showMessageDialog(EditGeneSetDialog.this,
+                            "Gene set updated successfully:\n" + targetFile.getName(),
+                            "Save Complete",
+                            JOptionPane.INFORMATION_MESSAGE);
+                        dispose();
+                        if (onUpdateSuccess != null) {
+                            onUpdateSuccess.run();
+                        }
+                    } catch (Exception ex) {
+                        logger.warning("Failed to update gene set: " + ex.getMessage());
+                        JOptionPane.showMessageDialog(EditGeneSetDialog.this,
+                            "Failed to update gene set:\n" + ex.getMessage(),
+                            "Save Failed",
+                            JOptionPane.ERROR_MESSAGE);
+                    }
                 } finally {
-                    setControlsEnabled(true);
+                    setControlsEnabled(isPresentationCurrent());
                 }
             }
         };

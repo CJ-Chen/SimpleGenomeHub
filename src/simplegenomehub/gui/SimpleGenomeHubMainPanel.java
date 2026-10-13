@@ -45,7 +45,7 @@ public class SimpleGenomeHubMainPanel extends JPanel implements SpeciesManager.S
         try {
             session = new HubSession(hostContext, config.getDataRootDir());
         } catch (IOException failure) {
-            throw new IllegalStateException("Cannot open Simple Genome Hub: " + failure.getMessage(), failure);
+            throw new biocjava.GUIexcutors.ToolOpenException("Cannot open Simple Genome Hub: " + failure.getMessage(), failure);
         }
         HubSession.attach(this, session);
         try {

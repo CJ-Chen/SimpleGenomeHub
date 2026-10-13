@@ -3,6 +3,8 @@
  */
 package simplegenomehub.gui;
 
+import simplegenomehub.runtime.HubWorker;
+
 import javax.swing.*;
 import javax.swing.border.TitledBorder;
 import java.awt.*;
@@ -203,7 +205,7 @@ public class FilePreviewDialog extends JDialog {
         loadingProgress.setVisible(true);
         contentArea.setText("Loading...");
         
-        SwingWorker<String, Void> worker = new SwingWorker<String, Void>() {
+        HubWorker<String, Void> worker = new HubWorker<String, Void>() {
             private long fileSize = 0;
             private int lineCount = 0;
             private long bytesRead = 0;
@@ -265,16 +267,19 @@ public class FilePreviewDialog extends JDialog {
             @Override
             protected void done() {
                 try {
-                    String content = get();
-                    contentArea.setText(content);
-                    contentArea.setCaretPosition(0);
-                    
-                    // Update file information
-                    updateFileInfo(fileSize, lineCount, bytesRead, hitDataLimit);
-                    
-                } catch (Exception e) {
-                    contentArea.setText("Error loading file: " + e.getMessage());
-                    updateFileInfo(file.length(), 0, 0, false);
+                    if (!isPresentationCurrent()) return;
+                    try {
+                        String content = get();
+                        contentArea.setText(content);
+                        contentArea.setCaretPosition(0);
+
+                        // Update file information
+                        updateFileInfo(fileSize, lineCount, bytesRead, hitDataLimit);
+
+                    } catch (Exception e) {
+                        contentArea.setText("Error loading file: " + e.getMessage());
+                        updateFileInfo(file.length(), 0, 0, false);
+                    }
                 } finally {
                     loadingProgress.setVisible(false);
                 }

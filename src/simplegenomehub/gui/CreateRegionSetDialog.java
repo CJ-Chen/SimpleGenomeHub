@@ -1,5 +1,7 @@
 package simplegenomehub.gui;
 
+import simplegenomehub.runtime.HubWorker;
+
 import simplegenomehub.model.SpeciesInfo;
 
 import javax.swing.*;
@@ -24,7 +26,7 @@ final class CreateRegionSetDialog extends JDialog {
     private final JTextField regionSetNameField;
     private final JTextArea regionSetArea;
     private final JButton createButton;
-    private boolean regionSetCreated;
+    private volatile boolean regionSetCreated;
     private boolean showingTemplate;
 
     CreateRegionSetDialog(Window parent, SpeciesInfo species, Runnable onCreateSuccess) {
@@ -228,53 +230,62 @@ final class CreateRegionSetDialog extends JDialog {
 
         setControlsEnabled(false);
 
-        SwingWorker<List<String>, Void> worker = new SwingWorker<List<String>, Void>() {
+        HubWorker<List<String>, Void> worker = new HubWorker<List<String>, Void>() {
             @Override
             protected List<String> doInBackground() throws Exception {
                 Map<String, Long> chromosomeSizes = GeneSetFileSupport.loadChromosomeSizesFromStats(statsFile);
-                return GeneSetFileSupport.validateRegionEntries(regionEntries, chromosomeSizes);
+                List<String> validationErrors = GeneSetFileSupport.validateRegionEntries(regionEntries, chromosomeSizes);
+                if (validationErrors.isEmpty()) {
+                    if (isCancelled()) throw new java.util.concurrent.CancellationException();
+                    GeneSetFileSupport.writeTextFile(outputFile,
+                        GeneSetFileSupport.formatRegionSetContent(regionEntries));
+                    regionSetCreated = true;
+                }
+                return validationErrors;
             }
 
             @Override
             protected void done() {
-                if (!CreateRegionSetDialog.this.isDisplayable()) {
-                    return;
-                }
-
                 try {
-                    List<String> validationErrors = get();
-                    if (!validationErrors.isEmpty()) {
-                        JTextArea errorArea = new JTextArea(String.join("\n", validationErrors), 12, 42);
-                        errorArea.setEditable(false);
-                        errorArea.setFont(SimpleGenomeHubStyle.FONT_MONOSPACED_PLAIN_12);
-                        JOptionPane.showMessageDialog(
-                            CreateRegionSetDialog.this,
-                            new JScrollPane(errorArea),
-                            "Region Set Validation Failed",
-                            JOptionPane.WARNING_MESSAGE
-                        );
+                    if (!isPresentationCurrent()) return;
+                    if (!CreateRegionSetDialog.this.isDisplayable()) {
                         return;
                     }
 
-                    GeneSetFileSupport.writeTextFile(outputFile,
-                        GeneSetFileSupport.formatRegionSetContent(regionEntries));
-                    regionSetCreated = true;
-                    JOptionPane.showMessageDialog(CreateRegionSetDialog.this,
-                        "Region set created successfully:\n" + outputFile.getName(),
-                        "Create Complete",
-                        JOptionPane.INFORMATION_MESSAGE);
-                    dispose();
-                    if (onCreateSuccess != null) {
-                        onCreateSuccess.run();
+                    try {
+                        List<String> validationErrors = get();
+                        if (!validationErrors.isEmpty()) {
+                            JTextArea errorArea = new JTextArea(String.join("\n", validationErrors), 12, 42);
+                            errorArea.setEditable(false);
+                            errorArea.setFont(SimpleGenomeHubStyle.FONT_MONOSPACED_PLAIN_12);
+                            JOptionPane.showMessageDialog(
+                                CreateRegionSetDialog.this,
+                                new JScrollPane(errorArea),
+                                "Region Set Validation Failed",
+                                JOptionPane.WARNING_MESSAGE
+                            );
+                            return;
+                        }
+
+                        // The background task committed the validated file before completing.
+                        regionSetCreated = true;
+                        JOptionPane.showMessageDialog(CreateRegionSetDialog.this,
+                            "Region set created successfully:\n" + outputFile.getName(),
+                            "Create Complete",
+                            JOptionPane.INFORMATION_MESSAGE);
+                        dispose();
+                        if (onCreateSuccess != null) {
+                            onCreateSuccess.run();
+                        }
+                    } catch (Exception ex) {
+                        logger.warning("Failed to create region set: " + ex.getMessage());
+                        JOptionPane.showMessageDialog(CreateRegionSetDialog.this,
+                            "Failed to create region set:\n" + ex.getMessage(),
+                            "Create Failed",
+                            JOptionPane.ERROR_MESSAGE);
                     }
-                } catch (Exception ex) {
-                    logger.warning("Failed to create region set: " + ex.getMessage());
-                    JOptionPane.showMessageDialog(CreateRegionSetDialog.this,
-                        "Failed to create region set:\n" + ex.getMessage(),
-                        "Create Failed",
-                        JOptionPane.ERROR_MESSAGE);
                 } finally {
-                    setControlsEnabled(true);
+                    setControlsEnabled(isPresentationCurrent());
                 }
             }
         };

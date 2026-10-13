@@ -3,6 +3,8 @@
  */
 package simplegenomehub.gui;
 
+import simplegenomehub.runtime.HubWorker;
+
 import simplegenomehub.model.SpeciesInfo;
 import simplegenomehub.model.SpeciesMetadata;
 import simplegenomehub.model.GeneAnnotationData;
@@ -21,7 +23,6 @@ import java.awt.event.WindowAdapter;
 import java.awt.event.WindowEvent;
 import java.io.File;
 import java.io.IOException;
-import javax.swing.SwingWorker;
 import java.util.Map;
 import java.util.HashMap;
 import java.util.logging.Logger;
@@ -941,7 +942,7 @@ public class SpeciesInfoPanel extends JPanel {
         progressDialog.setSize(420, 120);
         progressDialog.setLocationRelativeTo(this);
 
-        SwingWorker<File, String> worker = new SwingWorker<File, String>() {
+        HubWorker<File, String> worker = new HubWorker<File, String>() {
             @Override
             protected File doInBackground() throws Exception {
                 publish("Checking chromosome statistics...");
@@ -960,24 +961,28 @@ public class SpeciesInfoPanel extends JPanel {
 
             @Override
             protected void done() {
-                progressDialog.dispose();
                 try {
-                    File outputDir = get();
-                    Window parentWindow = SwingUtilities.getWindowAncestor(SpeciesInfoPanel.this);
-                    AdvancedCircosLaunchDialog launchDialog =
-                        new AdvancedCircosLaunchDialog(
-                            parentWindow,
-                            outputDir,
-                            currentSpecies,
-                            speciesManager
-                        );
-                    simplegenomehub.runtime.HubSession.attach(launchDialog, speciesManager.getSession());
-                    launchDialog.setVisible(true);
-                } catch (Exception e) {
-                    JOptionPane.showMessageDialog(SpeciesInfoPanel.this,
-                        "Failed to prepare Advanced Circos template:\n" + e.getMessage(),
-                        "Circos Error",
-                        JOptionPane.ERROR_MESSAGE);
+                    if (!isPresentationCurrent()) return;
+                    try {
+                        File outputDir = get();
+                        Window parentWindow = SwingUtilities.getWindowAncestor(SpeciesInfoPanel.this);
+                        AdvancedCircosLaunchDialog launchDialog =
+                            new AdvancedCircosLaunchDialog(
+                                parentWindow,
+                                outputDir,
+                                currentSpecies,
+                                speciesManager
+                            );
+                        simplegenomehub.runtime.HubSession.attach(launchDialog, speciesManager.getSession());
+                        launchDialog.setVisible(true);
+                    } catch (Exception e) {
+                        JOptionPane.showMessageDialog(SpeciesInfoPanel.this,
+                            "Failed to prepare Advanced Circos template:\n" + e.getMessage(),
+                            "Circos Error",
+                            JOptionPane.ERROR_MESSAGE);
+                    }
+                } finally {
+                    progressDialog.dispose();
                 }
             }
         };
@@ -1035,12 +1040,15 @@ public class SpeciesInfoPanel extends JPanel {
      * Import functional annotations for the current species
      */
     private void importFunctionalAnnotations() {
+        final simplegenomehub.runtime.HubSession importSession = simplegenomehub.runtime.HubSession.getExplicitOwner(this);
+        final long importGeneration = importSession == null ? 0 : importSession.getGeneration();
         // Open annotation import dialog
         final AnnotationImportDialog dialog = new AnnotationImportDialog(
             SwingUtilities.getWindowAncestor(this), currentSpecies);
         dialog.addWindowListener(new WindowAdapter() {
             @Override
             public void windowClosed(WindowEvent e) {
+                if (importSession != null && !importSession.accepts(importGeneration)) return;
                 if (!dialog.isImportSuccessful()) {
                     return;
                 }
@@ -1113,7 +1121,7 @@ public class SpeciesInfoPanel extends JPanel {
                 loadingDialog.setLocationRelativeTo(this);
                 
                 // Load annotations in background thread
-                SwingWorker<Boolean, Void> worker = new SwingWorker<Boolean, Void>() {
+                HubWorker<Boolean, Void> worker = new HubWorker<Boolean, Void>() {
                     @Override
                     protected Boolean doInBackground() throws Exception {
                         return currentSpecies.loadFunctionalAnnotations();
@@ -1121,30 +1129,34 @@ public class SpeciesInfoPanel extends JPanel {
                     
                     @Override
                     protected void done() {
-                        loadingDialog.dispose();
                         try {
-                            boolean loaded = get();
-                            if (loaded) {
-                                // Show annotation type selection dialog
-                                AnnotationTypeSelectionDialog selectionDialog = new AnnotationTypeSelectionDialog(
-                                    SwingUtilities.getWindowAncestor(SpeciesInfoPanel.this), currentSpecies);
-                                simplegenomehub.runtime.HubSession.attach(selectionDialog, speciesManager.getSession());
-                                selectionDialog.setVisible(true);
-                            } else {
+                            if (!isPresentationCurrent()) return;
+                            try {
+                                boolean loaded = get();
+                                if (loaded) {
+                                    // Show annotation type selection dialog
+                                    AnnotationTypeSelectionDialog selectionDialog = new AnnotationTypeSelectionDialog(
+                                        SwingUtilities.getWindowAncestor(SpeciesInfoPanel.this), currentSpecies);
+                                    simplegenomehub.runtime.HubSession.attach(selectionDialog, speciesManager.getSession());
+                                    selectionDialog.setVisible(true);
+                                } else {
+                                    JOptionPane.showMessageDialog(SpeciesInfoPanel.this,
+                                        "Failed to load functional annotations.",
+                                        "Loading Error",
+                                        JOptionPane.ERROR_MESSAGE);
+                                }
+                            } catch (Exception e) {
                                 JOptionPane.showMessageDialog(SpeciesInfoPanel.this,
-                                    "Failed to load functional annotations.",
+                                    "Error loading annotations: " + e.getMessage(),
                                     "Loading Error",
                                     JOptionPane.ERROR_MESSAGE);
                             }
-                        } catch (Exception e) {
-                            JOptionPane.showMessageDialog(SpeciesInfoPanel.this,
-                                "Error loading annotations: " + e.getMessage(),
-                                "Loading Error",
-                                JOptionPane.ERROR_MESSAGE);
+
+                            // Refresh buttons in case data was modified
+                        } finally {
+                            loadingDialog.dispose();
+                            updateFileOperationButtons();
                         }
-                        
-                        // Refresh buttons in case data was modified
-                        updateFileOperationButtons();
                     }
                 };
                 

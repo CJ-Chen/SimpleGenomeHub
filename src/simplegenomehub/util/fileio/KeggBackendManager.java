@@ -173,25 +173,28 @@ public final class KeggBackendManager {
             Files.createDirectories(getGlobalCacheDir().toPath());
             File staging = Files.createTempDirectory(getGlobalCacheDir().toPath(), ".kegg-download-").toFile();
             java.util.function.Consumer<String> publish = path -> {
-                if (session != null && !session.accepts(generation)) return;
                 try {
                     copyWithMd5(new File(path), getGlobalPresetBackendFile(backendType));
                     SimpleGenomeHubConfig config = SimpleGenomeHubConfig.getInstance();
                     config.setPropertyChecked(SimpleGenomeHubConfig.KEGG_BACKEND_MODE, BackendMode.PRESET.name());
                     config.setPropertyChecked(SimpleGenomeHubConfig.KEGG_BACKEND_TYPE, backendType);
                 } catch (IOException e) {
-                    javax.swing.JOptionPane.showMessageDialog(parent, "Failed to publish KEGG cache: " + e.getMessage());
+                    logger.log(java.util.logging.Level.WARNING, "Failed to publish KEGG cache", e);
+                    if (session == null || session.accepts(generation))
+                        javax.swing.JOptionPane.showMessageDialog(parent, "Failed to publish KEGG cache: " + e.getMessage());
                 }
             };
             Runnable complete = () -> {
-                try { GoOboManager.deleteStaging(staging); if (onComplete != null && (session == null || session.accepts(generation))) onComplete.run(); }
-                finally { if (task != null) task.close(); }
+                GoOboManager.completeDownload(staging, onComplete, task);
             };
             if (force) KeggBackEndProvider.downloadLatestBackendAndThen(staging, backendType, parent, publish, complete);
             else KeggBackEndProvider.ensureBackendAndThen(staging, backendType, parent, publish, complete);
         } catch (IOException | RuntimeException e) {
-            if (task != null) task.close();
-            javax.swing.JOptionPane.showMessageDialog(parent, "Failed to prepare KEGG download: " + e.getMessage());
+            try {
+                logger.log(java.util.logging.Level.WARNING, "Failed to prepare KEGG download", e);
+                if (session == null || session.accepts(generation))
+                    javax.swing.JOptionPane.showMessageDialog(parent, "Failed to prepare KEGG download: " + e.getMessage());
+            } finally { GoOboManager.completeDownload(null, onComplete, task); }
         }
     }
 

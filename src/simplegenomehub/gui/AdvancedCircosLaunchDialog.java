@@ -1,5 +1,7 @@
 package simplegenomehub.gui;
 
+import simplegenomehub.runtime.HubWorker;
+
 import biocjava.bioDoer.JIGplotToolkit.Circos.SuperCircos.AmazingSuperCircos2;
 import simplegenomehub.model.GenomeData;
 import simplegenomehub.model.SpeciesInfo;
@@ -337,7 +339,7 @@ public class AdvancedCircosLaunchDialog extends JDialog {
             return;
         }
 
-        SwingWorker<Void, Void> worker = new SwingWorker<Void, Void>() {
+        HubWorker<Void, Void> worker = new HubWorker<Void, Void>() {
             @Override
             protected Void doInBackground() throws Exception {
                 prepareGenePosFile(highlightSelection.getMergedGeneIds());
@@ -353,21 +355,24 @@ public class AdvancedCircosLaunchDialog extends JDialog {
             @Override
             protected void done() {
                 try {
-                    get();
-                    dispose();
-                } catch (Exception ex) {
-                    Throwable cause = ex.getCause() != null ? ex.getCause() : ex;
-                    logger.log(Level.SEVERE, "Failed to launch Advanced Circos project.", cause);
-                    setCursor(Cursor.getDefaultCursor());
-                    startButton.setEnabled(true);
-                    JOptionPane.showMessageDialog(AdvancedCircosLaunchDialog.this,
-                        "Failed to launch Advanced Circos:\n" + cause.getMessage(),
-                        "Advanced Circos Error",
-                        JOptionPane.ERROR_MESSAGE);
-                    return;
-                }
+                    if (!isPresentationCurrent()) return;
+                    try {
+                        get();
+                        dispose();
+                    } catch (Exception ex) {
+                        Throwable cause = ex.getCause() != null ? ex.getCause() : ex;
+                        logger.log(Level.SEVERE, "Failed to launch Advanced Circos project.", cause);
 
-                setCursor(Cursor.getDefaultCursor());
+                        JOptionPane.showMessageDialog(AdvancedCircosLaunchDialog.this,
+                            "Failed to launch Advanced Circos:\n" + cause.getMessage(),
+                            "Advanced Circos Error",
+                            JOptionPane.ERROR_MESSAGE);
+                        return;
+                    }
+                } finally {
+                    setCursor(Cursor.getDefaultCursor());
+                    startButton.setEnabled(isPresentationCurrent());
+                }
             }
         };
         simplegenomehub.runtime.HubSession.execute(this, worker);

@@ -4,6 +4,8 @@
  */
 package simplegenomehub.gui;
 
+import simplegenomehub.runtime.HubWorker;
+
 import biocjava.bioDoer.Kegg.KeggBackEndConstants;
 import simplegenomehub.model.*;
 import simplegenomehub.model.GeneAnnotationData.AnnotationType;
@@ -38,7 +40,7 @@ public class AnnotationImportDialog extends JDialog {
     
     private SpeciesInfo targetSpecies;
     private GeneAnnotationData annotationData;
-    private boolean importSuccessful = false;
+    private volatile boolean importSuccessful = false;
     
     // UI Components
     private ButtonGroup annotationTypeGroup;
@@ -883,10 +885,12 @@ public class AnnotationImportDialog extends JDialog {
         // Perform import in background
         final File goOboFileForImport = resolvedGoOboFile;
         final File keggBackendFileForImport = resolvedKeggBackendFile;
-        SwingWorker<Boolean, String> importWorker = new SwingWorker<Boolean, String>() {
+        final AnnotationType selectedTypeForImport = getSelectedAnnotationType();
+        final String selectedDelimiterForImport = (String) delimiterCombo.getSelectedItem();
+        HubWorker<Boolean, String> importWorker = new HubWorker<Boolean, String>() {
             @Override
             protected Boolean doInBackground() throws Exception {
-                final AnnotationType selectedType = getSelectedAnnotationType();
+                final AnnotationType selectedType = selectedTypeForImport;
                 
                 publish("Setting up annotation data...");
                 
@@ -895,12 +899,6 @@ public class AnnotationImportDialog extends JDialog {
                 // but the current implementation loads them directly during annotation import
                 
                 publish("Loading annotations from file...");
-                
-                // For Custom annotations, clear existing data of that type to avoid mixing with old data
-                if (selectedType == AnnotationType.CUSTOM) {
-                    publish("Clearing existing Custom annotations...");
-                    annotationData.clearAnnotationsOfType(AnnotationType.CUSTOM);
-                }
                 
                 // Import annotations based on type with delimiter detection
                 boolean success = false;
@@ -914,7 +912,7 @@ public class AnnotationImportDialog extends JDialog {
                     case INTERPRO:
                     case PFAM:
                     case CUSTOM:
-                        success = loadCustomAnnotationsWithDelimiter(annotationData, annotationFile, selectedType);
+                        success = loadCustomAnnotationsWithDelimiter(annotationData, annotationFile, selectedType, selectedDelimiterForImport);
                         break;
                 }
                 
@@ -969,7 +967,9 @@ public class AnnotationImportDialog extends JDialog {
                     targetSpecies.setFunctionalAnnotations(annotationData);
                     
                     // Save functional annotations to species
-                    targetSpecies.saveFunctionalAnnotations();
+                    if (!targetSpecies.saveFunctionalAnnotations())
+                        throw new java.io.IOException("Failed to save functional annotations for " + targetSpecies.getSpeciesDirectoryName());
+                    importSuccessful = true;
                     
                     // Debug: Print final annotation counts
                     System.out.println("DEBUG: Import successful. Annotation counts: " + annotationData.getAnnotationCounts());
@@ -990,32 +990,36 @@ public class AnnotationImportDialog extends JDialog {
             @Override
             protected void done() {
                 try {
-                    importSuccessful = get();
-                    
-                    if (importSuccessful) {
-                        AnnotationType selectedType = getSelectedAnnotationType();
-                        int annotationCount = annotationData.getAnnotationCounts().get(selectedType);
-                        
+                    if (!isPresentationCurrent()) return;
+                    try {
+                        importSuccessful = get();
+
+                        if (importSuccessful) {
+                            AnnotationType selectedType = selectedTypeForImport;
+                            int annotationCount = annotationData.getAnnotationCounts().get(selectedType);
+
+                            JOptionPane.showMessageDialog(AnnotationImportDialog.this,
+                                "Successfully imported " + annotationCount + " " +
+                                selectedType.getShortName() + " annotations!",
+                                "Import Complete", JOptionPane.INFORMATION_MESSAGE);
+                            dispose();
+                        } else {
+                            JOptionPane.showMessageDialog(AnnotationImportDialog.this,
+                                "Failed to import annotations. Please check the file format and try again.",
+                                "Import Failed", JOptionPane.ERROR_MESSAGE);
+                        }
+
+                    } catch (Exception e) {
+                        Throwable cause = e.getCause() == null ? e : e.getCause();
+                        logger.log(java.util.logging.Level.WARNING, "Import error", cause);
                         JOptionPane.showMessageDialog(AnnotationImportDialog.this,
-                            "Successfully imported " + annotationCount + " " + 
-                            selectedType.getShortName() + " annotations!",
-                            "Import Complete", JOptionPane.INFORMATION_MESSAGE);
-                        dispose();
-                    } else {
-                        JOptionPane.showMessageDialog(AnnotationImportDialog.this,
-                            "Failed to import annotations. Please check the file format and try again.",
-                            "Import Failed", JOptionPane.ERROR_MESSAGE);
+                            "Import error: " + cause.getMessage(),
+                            "Import Error", JOptionPane.ERROR_MESSAGE);
                     }
-                    
-                } catch (Exception e) {
-                    logger.warning("Import error: " + e.getMessage());
-                    JOptionPane.showMessageDialog(AnnotationImportDialog.this,
-                        "Import error: " + e.getMessage(),
-                        "Import Error", JOptionPane.ERROR_MESSAGE);
                 } finally {
                     progressBar.setVisible(false);
                     progressBar.setIndeterminate(false);
-                    importButton.setEnabled(true);
+                    importButton.setEnabled(isPresentationCurrent());
                 }
             }
         };
@@ -1027,6 +1031,10 @@ public class AnnotationImportDialog extends JDialog {
      * Analyze file format and validate structure
      */
     private FileFormatInfo analyzeFileFormat(File file) throws Exception {
+        return analyzeFileFormat(file, (String) delimiterCombo.getSelectedItem());
+    }
+
+    private FileFormatInfo analyzeFileFormat(File file, String selectedDelimiter) throws Exception {
         FileFormatInfo info = new FileFormatInfo();
         
         try (java.io.BufferedReader reader = new java.io.BufferedReader(new java.io.FileReader(file))) {
@@ -1048,7 +1056,6 @@ public class AnnotationImportDialog extends JDialog {
                 
                 // Auto-detect delimiter on first data line
                 if (detectedDelimiter == null) {
-                    String selectedDelimiter = (String) delimiterCombo.getSelectedItem();
                     if ("Auto Detect".equals(selectedDelimiter)) {
                         // Count potential delimiters
                         int tabCount = line.split("\t", -1).length - 1;
@@ -1207,47 +1214,19 @@ public class AnnotationImportDialog extends JDialog {
     /**
      * Load custom annotations with delimiter detection
      */
-    private boolean loadCustomAnnotationsWithDelimiter(GeneAnnotationData data, File file, 
-                                                        GeneAnnotationData.AnnotationType type) throws Exception {
-        FileFormatInfo formatInfo = analyzeFileFormat(file);
+    private boolean loadCustomAnnotationsWithDelimiter(GeneAnnotationData data, File file,
+                                                        GeneAnnotationData.AnnotationType type,
+                                                        String selectedDelimiter) throws Exception {
+        FileFormatInfo formatInfo = analyzeFileFormat(file, selectedDelimiter);
         if (!formatInfo.isValid) {
-            throw new Exception("Invalid file format: " + formatInfo.errorMessage);
+            throw new java.io.IOException("Invalid file format: " + file + ": " + formatInfo.errorMessage);
         }
-        
-        try (java.io.BufferedReader reader = new java.io.BufferedReader(new java.io.FileReader(file))) {
-            String line;
-            int imported = 0;
-            
-            while ((line = reader.readLine()) != null) {
-                if (line.startsWith("#") || line.trim().isEmpty()) continue;
-                
-                String[] parts = line.split(java.util.regex.Pattern.quote(formatInfo.delimiter), -1);
-                if (parts.length < 2) continue;
-                
-                String geneId = parts[0].trim();
-                String annotationId = parts[1].trim();
-                String description = parts.length > 2 ? parts[2].trim() : "";
-                String evidence = parts.length > 3 ? parts[3].trim() : "";
-                
-                if (geneId.isEmpty() || annotationId.isEmpty()) continue;
-                
-                GeneAnnotationData.GeneAnnotation annotation = 
-                    new GeneAnnotationData.GeneAnnotation(geneId, annotationId, description, type);
-                annotation.setDescription(description);
-                if (!evidence.isEmpty()) {
-                    annotation.setEvidence(evidence);
-                }
-                
-                data.addAnnotation(annotation);
-                imported++;
-            }
-            
-            logger.info("Imported " + imported + " " + type.getShortName() + " annotations using delimiter: " + 
-                       (formatInfo.delimiter.equals("\t") ? "TAB" : formatInfo.delimiter));
-            return imported > 0;
-        }
+        // The model validates the entire input before replacing CUSTOM data.
+        // A rejected file leaves the previous annotation set intact.
+        return data.loadCustomAnnotations(file, type, formatInfo.delimiter,
+            type == GeneAnnotationData.AnnotationType.CUSTOM);
     }
-    
+
     /**
      * File format analysis result
      */
