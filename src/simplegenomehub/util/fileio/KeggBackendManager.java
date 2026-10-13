@@ -7,6 +7,7 @@ import simplegenomehub.model.GeneAnnotationData;
 import simplegenomehub.model.SpeciesInfo;
 
 import java.awt.Component;
+import simplegenomehub.runtime.HubSession;
 import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
@@ -154,21 +155,44 @@ public final class KeggBackendManager {
     }
 
     public static void ensurePresetBackend(Component parent, String backendType, Runnable onComplete) {
-        File cacheDir = getGlobalCacheDir();
-        KeggBackEndProvider.ensureBackendAndThen(cacheDir, backendType, parent, path -> {
-            SimpleGenomeHubConfig config = SimpleGenomeHubConfig.getInstance();
-            config.setProperty(SimpleGenomeHubConfig.KEGG_BACKEND_MODE, BackendMode.PRESET.name());
-            config.setProperty(SimpleGenomeHubConfig.KEGG_BACKEND_TYPE, backendType);
-        }, onComplete);
+        File cached = getGlobalPresetBackendFile(backendType);
+        if (cached != null && KeggBackEndProvider.verifyBackendWithMd5(cached)) {
+            if (onComplete != null) javax.swing.SwingUtilities.invokeLater(onComplete);
+        } else downloadPreset(parent, backendType, onComplete, false);
     }
 
     public static void downloadLatestPresetBackend(Component parent, String backendType, Runnable onComplete) {
-        File cacheDir = getGlobalCacheDir();
-        KeggBackEndProvider.downloadLatestBackendAndThen(cacheDir, backendType, parent, path -> {
-            SimpleGenomeHubConfig config = SimpleGenomeHubConfig.getInstance();
-            config.setProperty(SimpleGenomeHubConfig.KEGG_BACKEND_MODE, BackendMode.PRESET.name());
-            config.setProperty(SimpleGenomeHubConfig.KEGG_BACKEND_TYPE, backendType);
-        }, onComplete);
+        downloadPreset(parent, backendType, onComplete, true);
+    }
+
+    private static void downloadPreset(Component parent, String backendType, Runnable onComplete, boolean force) {
+        HubSession session = HubSession.forComponent(parent);
+        final long generation = session == null ? 0 : session.getGeneration();
+        final HubSession.Task task = session == null ? null : session.beginTask("Download KEGG cache", null);
+        try {
+            Files.createDirectories(getGlobalCacheDir().toPath());
+            File staging = Files.createTempDirectory(getGlobalCacheDir().toPath(), ".kegg-download-").toFile();
+            java.util.function.Consumer<String> publish = path -> {
+                if (session != null && !session.accepts(generation)) return;
+                try {
+                    copyWithMd5(new File(path), getGlobalPresetBackendFile(backendType));
+                    SimpleGenomeHubConfig config = SimpleGenomeHubConfig.getInstance();
+                    config.setPropertyChecked(SimpleGenomeHubConfig.KEGG_BACKEND_MODE, BackendMode.PRESET.name());
+                    config.setPropertyChecked(SimpleGenomeHubConfig.KEGG_BACKEND_TYPE, backendType);
+                } catch (IOException e) {
+                    javax.swing.JOptionPane.showMessageDialog(parent, "Failed to publish KEGG cache: " + e.getMessage());
+                }
+            };
+            Runnable complete = () -> {
+                try { GoOboManager.deleteStaging(staging); if (onComplete != null && (session == null || session.accepts(generation))) onComplete.run(); }
+                finally { if (task != null) task.close(); }
+            };
+            if (force) KeggBackEndProvider.downloadLatestBackendAndThen(staging, backendType, parent, publish, complete);
+            else KeggBackEndProvider.ensureBackendAndThen(staging, backendType, parent, publish, complete);
+        } catch (IOException | RuntimeException e) {
+            if (task != null) task.close();
+            javax.swing.JOptionPane.showMessageDialog(parent, "Failed to prepare KEGG download: " + e.getMessage());
+        }
     }
 
     public static boolean cachePresetForSpecies(SpeciesInfo species, String backendType, File sourceBackend) {
@@ -200,7 +224,7 @@ public final class KeggBackendManager {
             }
             File target = new File(speciesDir, "custom-kegg-backend." + customBackend.getName());
             copyWithMd5(customBackend, target);
-            SimpleGenomeHubConfig.getInstance().setProperty(SimpleGenomeHubConfig.KEGG_CUSTOM_BACKEND_PATH, target.getAbsolutePath());
+            SimpleGenomeHubConfig.getInstance().setPropertyChecked(SimpleGenomeHubConfig.KEGG_CUSTOM_BACKEND_PATH, target.getAbsolutePath());
             return true;
         } catch (IOException e) {
             logger.log(Level.WARNING, "Failed to cache custom KEGG backend for species", e);
@@ -270,11 +294,8 @@ public final class KeggBackendManager {
         if (parent != null && !parent.exists()) {
             parent.mkdirs();
         }
-        Files.copy(source.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING);
         File sourceMd5 = new File(source.getParentFile(), source.getName() + ".md5");
-        if (sourceMd5.isFile()) {
-            Files.copy(sourceMd5.toPath(), new File(target.getParentFile(), target.getName() + ".md5").toPath(),
-                StandardCopyOption.REPLACE_EXISTING);
-        }
+        AtomicFiles.copyPair(source.toPath(), target.toPath(), sourceMd5.toPath(),
+            new File(target.getParentFile(), target.getName() + ".md5").toPath());
     }
 }

@@ -23,7 +23,9 @@ final class CreateGeneSetDialog extends JDialog {
 
     CreateGeneSetDialog(Window parent, SpeciesInfo species, Runnable onCreateSuccess) {
         super(parent, "Create a Gene Set", ModalityType.MODELESS);
+        simplegenomehub.runtime.HubSession.attach(this, simplegenomehub.runtime.HubSession.forComponent(parent));
         this.species = species;
+        simplegenomehub.runtime.HubSession.attach(this, simplegenomehub.runtime.HubSession.forDataPath(species.getSpeciesDir()));
         this.onCreateSuccess = onCreateSuccess;
         this.geneSetNameField = new JTextField();
         this.geneIdsArea = new JTextArea(14, 48);
@@ -220,7 +222,7 @@ final class CreateGeneSetDialog extends JDialog {
             }
         };
 
-        worker.execute();
+        simplegenomehub.runtime.HubSession.execute(this, worker);
     }
 
     private void setControlsEnabled(boolean enabled) {

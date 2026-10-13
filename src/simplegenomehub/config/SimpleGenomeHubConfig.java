@@ -9,6 +9,10 @@ import java.util.Properties;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 import javax.swing.JOptionPane;
+import java.awt.GraphicsEnvironment;
+import java.util.HashMap;
+import java.util.Map;
+import simplegenomehub.util.fileio.AtomicFiles;
 
 /**
  * Configuration management for SimpleGenomeHub
@@ -47,6 +51,7 @@ public class SimpleGenomeHubConfig {
     private File configFile;
     private File dataRootDir;
     private Properties configProperties;
+    private Properties savedProperties = new Properties();
     
     private static SimpleGenomeHubConfig instance;
     
@@ -60,7 +65,7 @@ public class SimpleGenomeHubConfig {
     /**
      * Get singleton instance
      */
-    public static SimpleGenomeHubConfig getInstance() {
+    public static synchronized SimpleGenomeHubConfig getInstance() {
         if (instance == null) {
             instance = new SimpleGenomeHubConfig();
         }
@@ -76,10 +81,6 @@ public class SimpleGenomeHubConfig {
             String userHome = System.getProperty("user.home");
             homeDir = new File(userHome, ".SimpleGenomeHub");
             
-            if (!homeDir.exists()) {
-                homeDir.mkdirs();
-            }
-            
             configFile = new File(homeDir, CONFIG_FILE_NAME);
             configProperties = new Properties();
             
@@ -87,9 +88,7 @@ public class SimpleGenomeHubConfig {
             
         } catch (Exception e) {
             logger.log(Level.SEVERE, "Failed to initialize configuration", e);
-            JOptionPane.showMessageDialog(null, 
-                "Failed to initialize configuration: " + e.getMessage(),
-                "Configuration Error", JOptionPane.ERROR_MESSAGE);
+            throw new IllegalStateException("Failed to initialize configuration", e);
         }
     }
     
@@ -98,8 +97,9 @@ public class SimpleGenomeHubConfig {
      */
     private void loadConfig() {
         if (configFile.exists()) {
-            try (FileInputStream fis = new FileInputStream(configFile)) {
-                configProperties.load(fis);
+            try {
+                configProperties.putAll(AtomicFiles.readProperties(configFile.toPath()));
+                savedProperties.putAll(configProperties);
                 logger.info("Configuration loaded from: " + configFile.getAbsolutePath());
                 
                 // Validate data root directory
@@ -133,119 +133,110 @@ public class SimpleGenomeHubConfig {
         configProperties.setProperty(EGGNOG_KEGG_BACKEND_MODE, "PRESET");
         configProperties.setProperty(EGGNOG_KEGG_BACKEND_TYPE, "Plants");
         configProperties.setProperty(UI_FONT_SCALE_PERCENT, "100");
-        saveConfig();
     }
     
     /**
      * Save configuration to file
      */
-    public void saveConfig() {
-        try (FileOutputStream fos = new FileOutputStream(configFile)) {
-            configProperties.store(fos, "SimpleGenomeHub Configuration File");
-            logger.info("Configuration saved to: " + configFile.getAbsolutePath());
-        } catch (IOException e) {
-            logger.log(Level.SEVERE, "Failed to save configuration", e);
+    public synchronized void saveConfig() {
+        try { saveConfigChecked(); }
+        catch (IOException e) { reportWriteFailure(e); }
+    }
+
+    public synchronized void saveConfigChecked() throws IOException {
+        Map<String, String> changes = new HashMap<>();
+        for (String key : configProperties.stringPropertyNames()) {
+            if (!java.util.Objects.equals(configProperties.getProperty(key), savedProperties.getProperty(key))) {
+                changes.put(key, configProperties.getProperty(key));
+            }
+        }
+        for (String key : savedProperties.stringPropertyNames()) {
+            if (!configProperties.containsKey(key)) changes.put(key, null);
+        }
+        if (changes.isEmpty()) return;
+        Properties merged = AtomicFiles.updateProperties(configFile.toPath(), changes, "SimpleGenomeHub Configuration File");
+        configProperties = merged;
+        savedProperties = new Properties();
+        savedProperties.putAll(merged);
+    }
+
+    private void reportWriteFailure(IOException failure) {
+        logger.log(Level.SEVERE, "Failed to save configuration", failure);
+        if (!GraphicsEnvironment.isHeadless()) {
+            javax.swing.SwingUtilities.invokeLater(() -> JOptionPane.showMessageDialog(null,
+                "Failed to save Hub configuration:\n" + failure.getMessage(), "Configuration Error", JOptionPane.ERROR_MESSAGE));
         }
     }
-    
+
     /**
      * Get data root directory
      */
-    public File getDataRootDir() {
+    public synchronized File getDataRootDir() {
         return dataRootDir;
     }
     
     /**
      * Set data root directory with validation
      */
-    public boolean setDataRootDir(File newDataDir) {
-        if (newDataDir == null) {
-            return false;
-        }
-        
-        // Validate directory path (no spaces, English only)
-        String path = newDataDir.getAbsolutePath();
-        if (path.contains(" ")) {
-            JOptionPane.showMessageDialog(null, 
-                "Directory path cannot contain spaces: " + path,
-                "Invalid Path", JOptionPane.ERROR_MESSAGE);
-            return false;
-        }
-        
-        // Check for non-ASCII characters
-        if (!path.matches("^[\\x00-\\x7F]*$")) {
-            JOptionPane.showMessageDialog(null, 
-                "Directory path must contain only English characters: " + path,
-                "Invalid Path", JOptionPane.ERROR_MESSAGE);
-            return false;
-        }
-        
-        // Create directory if it doesn't exist
-        if (!newDataDir.exists()) {
-            if (!newDataDir.mkdirs()) {
-                JOptionPane.showMessageDialog(null, 
-                    "Failed to create directory: " + path,
-                    "Directory Creation Failed", JOptionPane.ERROR_MESSAGE);
-                return false;
-            }
-        }
-        
-        // Verify it's a directory and writable
-        if (!newDataDir.isDirectory() || !newDataDir.canWrite()) {
-            JOptionPane.showMessageDialog(null, 
-                "Directory is not accessible or writable: " + path,
-                "Directory Access Error", JOptionPane.ERROR_MESSAGE);
-            return false;
-        }
-        
-        this.dataRootDir = newDataDir;
-        configProperties.setProperty(DATA_ROOT_DIR, path);
-        saveConfig();
-        
-        logger.info("Data root directory set to: " + path);
-        return true;
+    public synchronized boolean setDataRootDir(File newDataDir) {
+        try { setDataRootDirChecked(newDataDir); return true; }
+        catch (IOException e) { reportWriteFailure(e); return false; }
     }
-    
+
+    /** Transaction commit only: callers acquire the candidate session lease before this method. */
+    public synchronized void setDataRootDirChecked(File newDataDir) throws IOException {
+        if (newDataDir == null || !newDataDir.isDirectory() || !newDataDir.canWrite()) {
+            throw new IOException("Directory is not accessible or writable: " + newDataDir);
+        }
+        File candidate = newDataDir.getCanonicalFile();
+        String previous = configProperties.getProperty(DATA_ROOT_DIR);
+        configProperties.setProperty(DATA_ROOT_DIR, candidate.getPath());
+        try { saveConfigChecked(); }
+        catch (IOException failure) {
+            if (previous == null) configProperties.remove(DATA_ROOT_DIR);
+            else configProperties.setProperty(DATA_ROOT_DIR, previous);
+            throw failure;
+        }
+        dataRootDir = candidate;
+    }
+
     /**
      * Check if data root directory is configured
      */
-    public boolean isDataRootConfigured() {
+    public synchronized boolean isDataRootConfigured() {
         return dataRootDir != null && dataRootDir.exists() && dataRootDir.isDirectory();
     }
     
     /**
      * Get configuration property
      */
-    public String getProperty(String key) {
+    public synchronized String getProperty(String key) {
         return configProperties.getProperty(key);
     }
     
     /**
      * Set configuration property
      */
-    public void setProperty(String key, String value) {
-        String currentValue = configProperties.getProperty(key);
-        if (value == null) {
-            if (currentValue == null) {
-                return;
-            }
-            configProperties.remove(key);
-            saveConfig();
-            return;
-        }
-
-        if (value.equals(currentValue)) {
-            return;
-        }
-
-        configProperties.setProperty(key, value);
-        saveConfig();
+    public synchronized void setProperty(String key, String value) {
+        try { setPropertyChecked(key, value); }
+        catch (IOException e) { reportWriteFailure(e); }
     }
-    
+
+    public synchronized void setPropertyChecked(String key, String value) throws IOException {
+        String previous = configProperties.getProperty(key);
+        if (java.util.Objects.equals(previous, value)) return;
+        if (value == null) configProperties.remove(key); else configProperties.setProperty(key, value);
+        try { saveConfigChecked(); }
+        catch (IOException e) {
+            if (previous == null) configProperties.remove(key); else configProperties.setProperty(key, previous);
+            throw e;
+        }
+    }
+
     /**
      * Get configuration property as integer
      */
-    public int getIntProperty(String key, int defaultValue) {
+    public synchronized int getIntProperty(String key, int defaultValue) {
         String value = configProperties.getProperty(key);
         if (value != null) {
             try {

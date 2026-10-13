@@ -82,7 +82,9 @@ public class AnnotationImportDialog extends JDialog {
      */
     public AnnotationImportDialog(Window parent, SpeciesInfo species) {
         super(parent, "Import Functional Annotations - " + species.getSpeciesName(), ModalityType.MODELESS);
+        simplegenomehub.runtime.HubSession.attach(this, simplegenomehub.runtime.HubSession.forComponent(parent));
         this.targetSpecies = species;
+        simplegenomehub.runtime.HubSession.attach(this, simplegenomehub.runtime.HubSession.forDataPath(species.getSpeciesDir()));
         this.annotationData = species.getFunctionalAnnotations();
         
         // Create new annotation data if none exists
@@ -1018,7 +1020,7 @@ public class AnnotationImportDialog extends JDialog {
             }
         };
         
-        importWorker.execute();
+        simplegenomehub.runtime.HubSession.execute(this, importWorker);
     }
     
     /**

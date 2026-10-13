@@ -29,6 +29,7 @@ public class BlastDatabaseManager {
     private static final Logger logger = Logger.getLogger(BlastDatabaseManager.class.getName());
     
     private final BlastConfig config;
+    private final simplegenomehub.runtime.HubSession session;
     private final ConcurrentMap<String, BlastDatabase> databaseCache;
     private final ConcurrentMap<String, CompletableFuture<BlastDatabase>> creationTasks;
     private final ExecutorService executorService;
@@ -38,14 +39,25 @@ public class BlastDatabaseManager {
      * Initialize the database manager
      */
     public BlastDatabaseManager(BlastConfig config) {
+        this(config, simplegenomehub.runtime.HubSession.current());
+    }
+
+    public BlastDatabaseManager(BlastConfig config, simplegenomehub.runtime.HubSession session) {
         this.config = config;
+        this.session = session;
         this.databaseCache = new ConcurrentHashMap<>();
         this.creationTasks = new ConcurrentHashMap<>();
         this.executorService = Executors.newFixedThreadPool(4);
         this.cleanupExecutor = Executors.newScheduledThreadPool(1);
         
         // Schedule periodic cleanup
-        cleanupExecutor.scheduleAtFixedRate(this::performCleanup, 1, 1, TimeUnit.HOURS);
+        if (session != null) session.addCleanup(this::shutdown);
+        cleanupExecutor.scheduleAtFixedRate(() -> {
+            if (session != null && !session.isActive()) return;
+            try (simplegenomehub.runtime.HubSession.Task task = session == null ? null : session.beginTask("BLAST cache cleanup", null)) {
+                performCleanup();
+            } catch (java.util.concurrent.RejectedExecutionException ignored) { }
+        }, 1, 1, TimeUnit.HOURS);
         
         logger.info("BLAST database manager initialized");
     }
@@ -54,7 +66,7 @@ public class BlastDatabaseManager {
      * Ensure database exists for the given species and sequence type
      * This is the main entry point for on-demand database creation
      */
-    public BlastDatabase ensureDatabaseExists(SpeciesInfo species, SequenceType seqType) 
+    public synchronized BlastDatabase ensureDatabaseExists(SpeciesInfo species, SequenceType seqType)
             throws Exception {
         
         String dbKey = getDatabaseKey(species, seqType);
@@ -114,14 +126,10 @@ public class BlastDatabaseManager {
                                                                SequenceType seqType, 
                                                                File sourceFile, 
                                                                File dbDir) {
-        return CompletableFuture.supplyAsync(() -> {
-            try {
-                return createDatabase(species, seqType, sourceFile, dbDir);
-            } catch (Exception e) {
-                logger.log(Level.SEVERE, "Database creation failed: " + getDatabaseKey(species, seqType), e);
-                throw new RuntimeException(e);
-            }
-        }, executorService);
+        CompletableFuture<BlastDatabase> completed = new CompletableFuture<>();
+        try { completed.complete(createDatabase(species, seqType, sourceFile, dbDir)); }
+        catch (Exception failure) { completed.completeExceptionally(failure); }
+        return completed;
     }
     
     /**
@@ -140,14 +148,8 @@ public class BlastDatabaseManager {
         // Prepare database file
         File dbFile = new File(dbDir, seqType.toString().toLowerCase());
         
-        // Use TBtools MakeBlastDBonTheFly
-        MakeBlastDBonTheFly makeDb = new MakeBlastDBonTheFly();
-        makeDb.setInFile(sourceFile);
-        makeDb.setOutFile(dbFile);
-        
-        // Execute database creation
         long startTime = System.currentTimeMillis();
-        makeDb.process();
+        createIndex(config, session, sourceFile, dbDir, dbFile.getName(), seqType.getMolecularType());
         long duration = System.currentTimeMillis() - startTime;
         
         logger.info("Database creation completed: " + getDatabaseKey(species, seqType) + 
@@ -162,6 +164,22 @@ public class BlastDatabaseManager {
         return database;
     }
     
+    /** NCBI BLAST parses -in/-out itself; use local ASCII names even when the data root contains spaces. */
+    static void createIndex(BlastConfig config, simplegenomehub.runtime.HubSession session, File source,
+                            File directory, String name, BlastConfig.MolecularType molecularType) throws Exception {
+        java.nio.file.Path input = java.nio.file.Files.createTempFile(directory.toPath(), "sgh-input-", ".fa");
+        try {
+            java.nio.file.Files.delete(input);
+            try { java.nio.file.Files.createLink(input, source.toPath()); }
+            catch (IOException | UnsupportedOperationException failure) { java.nio.file.Files.copy(source.toPath(), input); }
+            biocjava.bioDoer.BLAST.ToolProcessRunner.Result completed = simplegenomehub.runtime.HubProcessRunner.run(session,
+                new ProcessBuilder(config.resolveBlastCommand("makeblastdb"), "-in", input.getFileName().toString(),
+                    "-dbtype", molecularType == BlastConfig.MolecularType.PROTEIN ? "prot" : "nucl",
+                    "-out", name, "-parse_seqids").directory(directory), 5, TimeUnit.MINUTES);
+            if (completed.exitCode != 0) throw new IOException("makeblastdb failed: " + completed.output);
+        } finally { java.nio.file.Files.deleteIfExists(input); }
+    }
+
     /**
      * Load database from disk if it exists
      */
@@ -202,7 +220,8 @@ public class BlastDatabaseManager {
      * Generate unique key for database
      */
     private String getDatabaseKey(SpeciesInfo species, SequenceType seqType) {
-        return species.getSpeciesDirectoryName() + "_" + seqType.name();
+        try { return species.getSpeciesDir().getCanonicalPath() + "|" + seqType.name(); }
+        catch (IOException ex) { return species.getSpeciesDir().getAbsolutePath() + "|" + seqType.name(); }
     }
     
     /**

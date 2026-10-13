@@ -41,6 +41,7 @@ public class AnnotationEditDialog extends JDialog {
      */
     public AnnotationEditDialog(Window parent, GeneAnnotation annotation) {
         super(parent, "Edit Annotation", ModalityType.MODELESS);
+        simplegenomehub.runtime.HubSession.attach(this, simplegenomehub.runtime.HubSession.forComponent(parent));
         this.originalAnnotation = annotation;
         
         initializeComponents();

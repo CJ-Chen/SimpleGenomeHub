@@ -64,7 +64,9 @@ public class GeneFilterDialog extends JDialog {
      */
     public GeneFilterDialog(Window parent, SpeciesInfo species, ExpressionMatrix matrix) {
         super(parent, "Gene Filter - " + matrix.getName(), ModalityType.MODELESS);
+        simplegenomehub.runtime.HubSession.attach(this, simplegenomehub.runtime.HubSession.forComponent(parent));
         this.species = species;
+        simplegenomehub.runtime.HubSession.attach(this, simplegenomehub.runtime.HubSession.forDataPath(species.getSpeciesDir()));
         this.matrix = matrix;
         this.filteredGenes = new LinkedHashSet<>();
         this.filteredData = new HashMap<>();
@@ -668,7 +670,7 @@ public class GeneFilterDialog extends JDialog {
                 }
             };
 
-        worker.execute();
+        simplegenomehub.runtime.HubSession.execute(this, worker);
     }
 
     /**

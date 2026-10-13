@@ -4,6 +4,7 @@
 package simplegenomehub.util.performance;
 
 import simplegenomehub.model.SpeciesInfo;
+import simplegenomehub.runtime.HubSession;
 import simplegenomehub.model.GenomeData;
 import simplegenomehub.model.SpeciesMetadata;
 import java.io.File;
@@ -23,8 +24,25 @@ import java.util.logging.Logger;
 public class LazySpeciesLoader {
     
     private static final Logger logger = Logger.getLogger(LazySpeciesLoader.class.getName());
-    private static final ExecutorService backgroundExecutor = Executors.newFixedThreadPool(4);
-    
+    private static final ConcurrentHashMap<String, ExecutorService> executors = new ConcurrentHashMap<>();
+    private static final ConcurrentHashMap<String, java.util.concurrent.atomic.AtomicLong> rootGenerations = new ConcurrentHashMap<>();
+    private static final java.util.concurrent.atomic.AtomicLong generation = new java.util.concurrent.atomic.AtomicLong();
+    private static String rootKey(File root) {
+        try { return root.getCanonicalPath(); }
+        catch (java.io.IOException e) { return root.getAbsolutePath(); }
+    }
+    private static java.util.concurrent.atomic.AtomicLong rootGeneration(SpeciesInfo species) {
+        return rootGenerations.computeIfAbsent(rootKey(species.getSpeciesDir().getParentFile()), ignored -> new java.util.concurrent.atomic.AtomicLong());
+    }
+    private static synchronized ExecutorService executor(SpeciesInfo species) {
+        return executors.computeIfAbsent(rootKey(species.getSpeciesDir().getParentFile()), ignored ->
+            Executors.newFixedThreadPool(4, runnable -> {
+                Thread thread = new Thread(runnable, "SGH-species-loader");
+                thread.setDaemon(true);
+                return thread;
+            }));
+    }
+
     // Cache for loaded genome data
     private static final ConcurrentHashMap<String, GenomeData> genomeDataCache = new ConcurrentHashMap<>();
     private static final ConcurrentHashMap<String, CompletableFuture<GenomeData>> loadingTasks = new ConcurrentHashMap<>();
@@ -68,7 +86,7 @@ public class LazySpeciesLoader {
         }
         
         // Check if genome data is immediately available (cached or quick load)
-        String cacheKey = getCacheKey(speciesName, version);
+        String cacheKey = getCacheKey(species);
         GenomeData cachedData = genomeDataCache.get(cacheKey);
         if (cachedData != null) {
             species.setGenomeData(cachedData);
@@ -94,7 +112,11 @@ public class LazySpeciesLoader {
      * Load genome data asynchronously
      */
     public static CompletableFuture<GenomeData> loadGenomeDataAsync(SpeciesInfo species) {
-        String cacheKey = getCacheKey(species.getSpeciesName(), species.getVersion());
+        return loadGenomeDataAsync(species, HubSession.current());
+    }
+
+    public static CompletableFuture<GenomeData> loadGenomeDataAsync(SpeciesInfo species, HubSession session) {
+        String cacheKey = getCacheKey(species);
         
         // Return cached data if available
         GenomeData cached = genomeDataCache.get(cacheKey);
@@ -108,7 +130,12 @@ public class LazySpeciesLoader {
             return existingTask;
         }
         
-        // Start new loading task
+        // A retired session must not repopulate caches after close or root switch.
+        final long expectedGeneration = generation.get();
+        final java.util.concurrent.atomic.AtomicLong rootEpoch = rootGeneration(species);
+        final long expectedRootEpoch = rootEpoch.get();
+        final long sessionGeneration = session == null ? 0 : session.getGeneration();
+        final HubSession.Task actualTask = session == null ? null : session.beginTask("Read genome statistics", null);
         CompletableFuture<GenomeData> loadingTask = CompletableFuture.supplyAsync(() -> {
             try {
                 GenomeData genomeData = null;
@@ -129,7 +156,7 @@ public class LazySpeciesLoader {
                     }
                 }
                 
-                if (genomeData != null) {
+                if (genomeData != null && generation.get() == expectedGeneration && rootEpoch.get() == expectedRootEpoch && (session == null || session.accepts(sessionGeneration))) {
                     genomeDataCache.put(cacheKey, genomeData);
                 }
                 
@@ -139,11 +166,12 @@ public class LazySpeciesLoader {
                 logger.warning("Failed to load genome data for " + species.getDisplayName() + ": " + e.getMessage());
                 return null;
             } finally {
-                loadingTasks.remove(cacheKey);
+                if (actualTask != null) actualTask.close();
             }
-        }, backgroundExecutor);
-        
+        }, executor(species));
+
         loadingTasks.put(cacheKey, loadingTask);
+        loadingTask.whenComplete((value, failure) -> loadingTasks.remove(cacheKey, loadingTask));
         return loadingTask;
     }
     
@@ -151,10 +179,18 @@ public class LazySpeciesLoader {
      * Preload genome data for multiple species in background
      */
     public static void preloadGenomeData(java.util.List<SpeciesInfo> speciesList) {
+        preloadGenomeData(speciesList, HubSession.current());
+    }
+
+    public static void preloadGenomeData(java.util.List<SpeciesInfo> speciesList, HubSession session) {
+        final long sessionGeneration = session == null ? 0 : session.getGeneration();
+        final long expectedGeneration = generation.get();
         for (SpeciesInfo species : speciesList) {
+            final java.util.concurrent.atomic.AtomicLong rootEpoch = rootGeneration(species);
+            final long expectedRootEpoch = rootEpoch.get();
             if (species.getGenomeData() == null) {
-                loadGenomeDataAsync(species).thenAccept(genomeData -> {
-                    if (genomeData != null) {
+                loadGenomeDataAsync(species, session).thenAccept(genomeData -> {
+                    if (genomeData != null && expectedGeneration == generation.get() && rootEpoch.get() == expectedRootEpoch && (session == null || session.accepts(sessionGeneration))) {
                         species.setGenomeData(genomeData);
                     }
                 });
@@ -166,7 +202,9 @@ public class LazySpeciesLoader {
      * Clear cache to free memory
      */
     public static void clearCache() {
+        generation.incrementAndGet();
         genomeDataCache.clear();
+        loadingTasks.clear();
         logger.info("Cleared genome data cache");
     }
     
@@ -181,8 +219,10 @@ public class LazySpeciesLoader {
     /**
      * Generate cache key for species
      */
-    private static String getCacheKey(String speciesName, String version) {
-        return speciesName + ":" + version;
+    private static String getCacheKey(SpeciesInfo species) {
+        File directory = species.getSpeciesDir();
+        try { return directory.getCanonicalPath(); }
+        catch (java.io.IOException e) { return directory.getAbsolutePath(); }
     }
     
     /**
@@ -216,8 +256,39 @@ public class LazySpeciesLoader {
     /**
      * Shutdown executor on application exit
      */
+    public static void clearRoot(File root) {
+        if (root == null) return;
+        String identity = rootKey(root);
+        rootGenerations.computeIfAbsent(identity, ignored -> new java.util.concurrent.atomic.AtomicLong()).incrementAndGet();
+        String prefix = identity + File.separator;
+        genomeDataCache.keySet().removeIf(key -> key.startsWith(prefix));
+        loadingTasks.keySet().removeIf(key -> key.startsWith(prefix));
+    }
+
+    public static void shutdownRoot(File root) {
+        if (root == null) return;
+        clearRoot(root);
+        ExecutorService old;
+        synchronized (LazySpeciesLoader.class) { old = executors.remove(rootKey(root)); }
+        awaitShutdown(old);
+    }
+
     public static void shutdown() {
-        backgroundExecutor.shutdown();
-        logger.info("Lazy species loader shutdown");
+        clearCache();
+        java.util.List<ExecutorService> old;
+        synchronized (LazySpeciesLoader.class) { old = new java.util.ArrayList<>(executors.values()); executors.clear(); }
+        for (ExecutorService executor : old) awaitShutdown(executor);
+    }
+
+    private static void awaitShutdown(ExecutorService old) {
+        if (old == null) return;
+        // Queued read tasks also own session leases; let their finally blocks run.
+        old.shutdown();
+        boolean interrupted = false;
+        while (!old.isTerminated()) {
+            try { old.awaitTermination(1, java.util.concurrent.TimeUnit.SECONDS); }
+            catch (InterruptedException e) { interrupted = true; }
+        }
+        if (interrupted) Thread.currentThread().interrupt();
     }
 }

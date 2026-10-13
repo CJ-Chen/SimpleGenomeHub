@@ -4,7 +4,7 @@
 package simplegenomehub.model;
 
 import simplegenomehub.config.SimpleGenomeHubConfig;
-import simplegenomehub.util.fileio.SpeciesDataVersionManager;
+import simplegenomehub.runtime.HubSession;
 import simplegenomehub.util.performance.LazySpeciesLoader;
 import simplegenomehub.util.performance.PerformanceMonitor;
 import java.io.File;
@@ -29,6 +29,8 @@ public class SpeciesManager {
     private static final Logger logger = Logger.getLogger(SpeciesManager.class.getName());
     
     private SimpleGenomeHubConfig config;
+    private File dataRootDirectory;
+    private HubSession session;
     private Map<String, SpeciesInfo> speciesMap;
     private List<SpeciesManagerListener> listeners;
     
@@ -45,14 +47,24 @@ public class SpeciesManager {
     /**
      * Constructor
      */
-    public SpeciesManager() {
+    public SpeciesManager() { this(SimpleGenomeHubConfig.getInstance().getDataRootDir()); }
+
+    /** Caller owns the root lease before creating this manager. Loading is read-only. */
+    public SpeciesManager(File root) {
         this.config = SimpleGenomeHubConfig.getInstance();
+        this.dataRootDirectory = root;
         this.speciesMap = new HashMap<>();
         this.listeners = new ArrayList<>();
-        
         loadSpeciesData();
     }
-    
+
+    public HubSession getSession() { return session; }
+
+    public void setSession(HubSession session) {
+        this.session = session;
+        LazySpeciesLoader.preloadGenomeData(new ArrayList<>(speciesMap.values()), session);
+    }
+
     /**
      * Add listener for species manager events
      */
@@ -72,67 +84,28 @@ public class SpeciesManager {
      */
     public void loadSpeciesData() {
         PerformanceMonitor.startOperation("loadSpeciesData");
-        speciesMap.clear();
-        
-        File dataDir = config.getDataRootDir();
-        if (dataDir == null || !dataDir.exists()) {
-            logger.info("No data directory configured or directory not found");
-            PerformanceMonitor.endOperation("loadSpeciesData");
-            return;
-        }
-
-        SpeciesDataVersionManager.migrateLegacyDataIfNeeded(dataDir);
-        
-        File[] speciesDirs = dataDir.listFiles(File::isDirectory);
-        if (speciesDirs == null) {
-            logger.warning("Cannot read data directory: " + dataDir.getAbsolutePath());
-            PerformanceMonitor.endOperation("loadSpeciesData");
-            return;
-        }
-        
-        logger.info("Loading " + speciesDirs.length + " species directories...");
-        int loadedCount = 0;
-        
-        // Use parallel stream for faster loading with many directories
-        if (speciesDirs.length > 10) {
-            Arrays.stream(speciesDirs)
-                .parallel()
-                .forEach(speciesDir -> {
-                    SpeciesInfo species = LazySpeciesLoader.loadSpeciesLazy(speciesDir);
-                    if (species != null) {
-                        String key = getSpeciesKey(species.getSpeciesName(), species.getVersion());
-                        synchronized(speciesMap) {
-                            speciesMap.put(key, species);
-                        }
-                    }
-                });
-            loadedCount = speciesMap.size();
-        } else {
-            // Sequential loading for smaller datasets
-            for (File speciesDir : speciesDirs) {
-                SpeciesInfo species = LazySpeciesLoader.loadSpeciesLazy(speciesDir);
-                if (species != null) {
-                    String key = getSpeciesKey(species.getSpeciesName(), species.getVersion());
-                    speciesMap.put(key, species);
-                    loadedCount++;
-                }
-            }
-        }
-        
-        // Start background preloading of genome data
-        if (loadedCount > 0) {
-            List<SpeciesInfo> allSpecies = new ArrayList<>(speciesMap.values());
-            LazySpeciesLoader.preloadGenomeData(allSpecies);
-        }
-        
-        long loadTime = PerformanceMonitor.endOperation("loadSpeciesData");
-        logger.info(String.format("Loaded %d species in %d ms (%s)", 
-            loadedCount, loadTime, LazySpeciesLoader.getCacheStats()));
-        
-        config.setIntProperty(SimpleGenomeHubConfig.LAST_SPECIES_COUNT, loadedCount);
-        PerformanceMonitor.logStatus();
+        try {
+            speciesMap = readSpecies(dataRootDirectory);
+            if (session != null) LazySpeciesLoader.preloadGenomeData(new ArrayList<>(speciesMap.values()), session);
+        } catch (IOException e) {
+            throw new IllegalStateException("Failed to load data directory: " + dataRootDirectory, e);
+        } finally { PerformanceMonitor.endOperation("loadSpeciesData"); }
     }
-    
+
+    private Map<String, SpeciesInfo> readSpecies(File root) throws IOException {
+        Map<String, SpeciesInfo> loaded = new HashMap<>();
+        if (root == null) return loaded;
+        if (!root.isDirectory()) throw new IOException("Data directory is unavailable: " + root);
+        File[] directories = root.listFiles(file -> file.isDirectory() && !file.getName().startsWith("."));
+        if (directories == null) throw new IOException("Cannot read data directory: " + root);
+        Arrays.sort(directories, Comparator.comparing(File::getName));
+        for (File directory : directories) {
+            SpeciesInfo species = LazySpeciesLoader.loadSpeciesLazy(directory);
+            if (species != null) loaded.put(getSpeciesKey(species.getSpeciesName(), species.getVersion()), species);
+        }
+        return loaded;
+    }
+
     /**
      * Load species information from directory
      */
@@ -191,7 +164,7 @@ public class SpeciesManager {
         }
         
         // Check if data directory is configured
-        if (!config.isDataRootConfigured()) {
+        if ((dataRootDirectory == null || !dataRootDirectory.isDirectory())) {
             JOptionPane.showMessageDialog(null, 
                 "Data root directory not configured. Please set data directory first.",
                 "Configuration Required", JOptionPane.ERROR_MESSAGE);
@@ -199,7 +172,7 @@ public class SpeciesManager {
         }
         
         // Initialize file structure
-        species.initializeFileStructure(config.getDataRootDir());
+        species.initializeFileStructure(dataRootDirectory);
         
         // Create directory structure
         if (!species.createDirectoryStructure()) {
@@ -332,7 +305,7 @@ public class SpeciesManager {
             return updateSpecies(species);
         }
 
-        if (!config.isDataRootConfigured()) {
+        if ((dataRootDirectory == null || !dataRootDirectory.isDirectory())) {
             JOptionPane.showMessageDialog(null,
                 "Data root directory not configured. Please set data directory first.",
                 "Configuration Required", JOptionPane.ERROR_MESSAGE);
@@ -355,7 +328,7 @@ public class SpeciesManager {
             return false;
         }
 
-        File dataRoot = config.getDataRootDir();
+        File dataRoot = dataRootDirectory;
         if (dataRoot == null || !dataRoot.exists()) {
             JOptionPane.showMessageDialog(null,
                 "Data root directory is unavailable.",
@@ -470,31 +443,42 @@ public class SpeciesManager {
      * Set data root directory and reload species
      */
     public boolean setDataRootDirectory(File newDir) {
-        if (config.setDataRootDir(newDir)) {
-            loadSpeciesData();
-            
-            // Notify listeners
-            for (SpeciesManagerListener listener : listeners) {
-                listener.onDataDirectoryChanged(newDir);
-            }
-            
+        try {
+            if (session == null) throw new IllegalStateException("No active Hub session owns the data directory");
+            if (newDir == null) throw new IOException("No data directory selected");
+            if (!newDir.exists()) Files.createDirectories(newDir.toPath());
+            final File previousRoot = dataRootDirectory;
+            session.changeDataRoot(newDir, new HubSession.RootChange() {
+                @Override public Object prepare(File candidate) throws Exception { return readSpecies(candidate); }
+                @Override @SuppressWarnings("unchecked") public void commit(File candidate, Object prepared) throws Exception {
+                    config.setDataRootDirChecked(candidate);
+                    LazySpeciesLoader.clearRoot(dataRootDirectory);
+                    dataRootDirectory = candidate;
+                    speciesMap = (Map<String, SpeciesInfo>) prepared;
+                }
+            });
+            // Completion callbacks may acquire the session monitor. Never join a
+            // reader pool while changeDataRoot holds that monitor.
+            if (previousRoot != null && !previousRoot.getCanonicalFile().equals(dataRootDirectory.getCanonicalFile()))
+                LazySpeciesLoader.shutdownRoot(previousRoot);
+            if (session != null) LazySpeciesLoader.preloadGenomeData(new ArrayList<>(speciesMap.values()), session);
+            for (SpeciesManagerListener listener : new ArrayList<>(listeners)) listener.onDataDirectoryChanged(dataRootDirectory);
             return true;
+        } catch (Exception e) {
+            logger.log(Level.WARNING, "Data directory change failed; original session retained", e);
+            if (!java.awt.GraphicsEnvironment.isHeadless()) JOptionPane.showMessageDialog(null,
+                "Cannot change data directory:\n" + e.getMessage(), "Data Directory Error", JOptionPane.ERROR_MESSAGE);
+            return false;
         }
-        return false;
     }
-    
-    /**
-     * Get current data root directory
-     */
-    public File getDataRootDirectory() {
-        return config.getDataRootDir();
-    }
-    
+
+    public File getDataRootDirectory() { return dataRootDirectory; }
+
     /**
      * Generate unique species key
      */
     private String getSpeciesKey(String speciesName, String version) {
-        return speciesName.toLowerCase() + "." + version.toLowerCase();
+        return speciesName.toLowerCase(Locale.ROOT) + "." + version.toLowerCase(Locale.ROOT);
     }
 
     private boolean persistSpeciesArtifacts(SpeciesInfo species) {
@@ -509,12 +493,18 @@ public class SpeciesManager {
         }
 
         if (species.getGenomeData() != null && species.getStatsFile() != null) {
-            species.getGenomeData().saveToFile(species.getStatsFile());
+            if (!species.getGenomeData().saveToFile(species.getStatsFile())) {
+                if (!java.awt.GraphicsEnvironment.isHeadless()) JOptionPane.showMessageDialog(null,
+                    "Failed to save genome statistics: " + species.getStatsFile(), "Save Failed", JOptionPane.ERROR_MESSAGE);
+                return false;
+            }
         }
 
         SpeciesMetadata metadata = SpeciesMetadata.fromSpeciesInfo(species);
         if (!metadata.saveToFile(species.getSpeciesDir())) {
             logger.warning("Failed to save metadata for: " + species.getSpeciesDirectoryName());
+            if (!java.awt.GraphicsEnvironment.isHeadless()) JOptionPane.showMessageDialog(null,
+                "Failed to save species metadata: " + species.getSpeciesDirectoryName(), "Save Failed", JOptionPane.ERROR_MESSAGE);
             return false;
         }
 
@@ -626,7 +616,7 @@ public class SpeciesManager {
      * Shutdown performance utilities
      */
     public void shutdown() {
-        LazySpeciesLoader.shutdown();
+        LazySpeciesLoader.shutdownRoot(dataRootDirectory);
         logger.info("Species manager shutdown complete");
     }
     

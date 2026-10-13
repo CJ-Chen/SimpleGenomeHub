@@ -29,7 +29,9 @@ final class CreateRegionSetDialog extends JDialog {
 
     CreateRegionSetDialog(Window parent, SpeciesInfo species, Runnable onCreateSuccess) {
         super(parent, "Create a Region Set", ModalityType.MODELESS);
+        simplegenomehub.runtime.HubSession.attach(this, simplegenomehub.runtime.HubSession.forComponent(parent));
         this.species = species;
+        simplegenomehub.runtime.HubSession.attach(this, simplegenomehub.runtime.HubSession.forDataPath(species.getSpeciesDir()));
         this.onCreateSuccess = onCreateSuccess;
         this.regionSetNameField = new JTextField();
         this.regionSetArea = new JTextArea(14, 48);
@@ -277,7 +279,7 @@ final class CreateRegionSetDialog extends JDialog {
             }
         };
 
-        worker.execute();
+        simplegenomehub.runtime.HubSession.execute(this, worker);
     }
 
     private void setControlsEnabled(boolean enabled) {

@@ -30,6 +30,9 @@ import java.util.logging.Logger;
  * @author SimpleGenomeHub Team
  */
 public class BlastPanel extends JPanel {
+    private volatile boolean closing;
+    private final simplegenomehub.runtime.HubSession hubSession;
+
     
     private static final Logger logger = Logger.getLogger(BlastPanel.class.getName());
     
@@ -62,6 +65,8 @@ public class BlastPanel extends JPanel {
      */
     public BlastPanel(SpeciesManager speciesManager) {
         this.speciesManager = speciesManager;
+        this.hubSession = speciesManager.getSession();
+        simplegenomehub.runtime.HubSession.attach(this, hubSession);
         
         try {
             initializeBlastComponents();
@@ -80,8 +85,8 @@ public class BlastPanel extends JPanel {
      */
     private void initializeBlastComponents() throws Exception {
         blastConfig = new BlastConfig();
-        dbManager = new BlastDatabaseManager(blastConfig);
-        blastExecutor = new BlastExecutor(blastConfig, dbManager);
+        dbManager = new BlastDatabaseManager(blastConfig, hubSession);
+        blastExecutor = new BlastExecutor(blastConfig, dbManager, hubSession);
     }
     
     /**
@@ -570,6 +575,7 @@ public class BlastPanel extends JPanel {
         future.whenComplete((result, throwable) -> {
             SwingUtilities.invokeLater(() -> {
                 progressBar.setIndeterminate(false);
+                if (closing || (hubSession != null && !hubSession.isActive())) return;
                 executeButton.setEnabled(true);
 
                 if (throwable != null) {
@@ -699,7 +705,13 @@ public class BlastPanel extends JPanel {
     /**
      * Cleanup resources
      */
+    public java.util.concurrent.CompletionStage<Void> cleanupAsync() {
+        closing = true;
+        return java.util.concurrent.CompletableFuture.runAsync(this::cleanup);
+    }
+
     public void cleanup() {
+        closing = true;
         if (dbManager != null) {
             dbManager.shutdown();
         }

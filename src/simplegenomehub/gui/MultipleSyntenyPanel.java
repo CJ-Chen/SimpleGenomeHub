@@ -1113,7 +1113,7 @@ public class MultipleSyntenyPanel extends JPanel {
                 }
             };
 
-        worker.execute();
+        simplegenomehub.runtime.HubSession.execute(this, worker);
     }
 
     private void openResultViewer(File resultDir) {

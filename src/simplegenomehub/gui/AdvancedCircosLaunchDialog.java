@@ -61,11 +61,14 @@ public class AdvancedCircosLaunchDialog extends JDialog {
     public AdvancedCircosLaunchDialog(Window parent, File projectDir, SpeciesInfo currentSpecies,
                                       SpeciesManager speciesManager) {
         super(parent, DIALOG_TITLE, ModalityType.MODELESS);
+        simplegenomehub.runtime.HubSession.attach(this, simplegenomehub.runtime.HubSession.forComponent(parent));
         if (projectDir == null) {
             throw new IllegalArgumentException("Project directory cannot be null.");
         }
 
         this.projectDir = projectDir;
+        simplegenomehub.runtime.HubSession.attach(this,
+            simplegenomehub.runtime.HubSession.forDataPath(projectDir));
         this.currentSpecies = currentSpecies;
 
         initializeComponents();
@@ -367,7 +370,7 @@ public class AdvancedCircosLaunchDialog extends JDialog {
                 setCursor(Cursor.getDefaultCursor());
             }
         };
-        worker.execute();
+        simplegenomehub.runtime.HubSession.execute(this, worker);
     }
 
     private void prepareWorkDirectoryAndTracks(List<String> selectedTracks) throws IOException {
@@ -856,6 +859,11 @@ public class AdvancedCircosLaunchDialog extends JDialog {
     }
 
     public static void openProjectDirectly(File projectDir) throws Exception {
+        openProjectWithResult(projectDir);
+    }
+
+    /** Returns the same drawing instance whose window and preview belong to this Hub. */
+    public static AmazingSuperCircos2 openProjectWithResult(File projectDir) throws Exception {
         if (projectDir == null || !projectDir.isDirectory()) {
             throw new IllegalArgumentException("Advanced Circos project directory is not available.");
         }
@@ -865,7 +873,14 @@ public class AdvancedCircosLaunchDialog extends JDialog {
             throw new IllegalArgumentException("ChrInfo.tab is missing or unreadable:\n" + chrInfoFile.getAbsolutePath());
         }
 
+        simplegenomehub.runtime.HubSession session = simplegenomehub.runtime.HubSession.forDataPath(projectDir);
+        simplegenomehub.runtime.HubSession.Task opening = session == null ? null
+            : session.beginTask("Open Advanced Circos project", null);
+        try {
+
         AmazingSuperCircos2 circos = new AmazingSuperCircos2();
+        if (session != null) circos.getResultPanel().setOwnedDialogRegistrar(window ->
+            SimpleGenomeHubFontManager.registerOwnedWindowTree(window, session));
         circos.setInChrInfo(chrInfoFile);
 
         File geneInfoFile = new File(projectDir, "GenePos.tab");
@@ -880,6 +895,10 @@ public class AdvancedCircosLaunchDialog extends JDialog {
 
         circos.readConfigDir(projectDir);
         circos.process();
+        if (session != null && circos.getResultPanel() != null) {
+            Window window = SwingUtilities.getWindowAncestor(circos.getResultPanel());
+            SimpleGenomeHubFontManager.registerOwnedWindowTree(window, session);
+        }
         try {
             AdvancedCircosPreviewExporter.exportPreview(circos, projectDir);
         } catch (IOException previewEx) {
@@ -888,6 +907,8 @@ public class AdvancedCircosLaunchDialog extends JDialog {
                 previewEx
             );
         }
+        return circos;
+        } finally { if (opening != null) opening.close(); }
     }
 
     private static final class LinkChoiceItem {

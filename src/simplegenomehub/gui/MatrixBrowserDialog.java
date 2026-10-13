@@ -41,6 +41,7 @@ public class MatrixBrowserDialog extends JDialog {
      */
     public MatrixBrowserDialog(Window parent, ExpressionMatrix matrix) {
         super(parent, "Matrix Browser - " + matrix.getName(), ModalityType.MODELESS);
+        simplegenomehub.runtime.HubSession.attach(this, simplegenomehub.runtime.HubSession.forComponent(parent));
         this.matrix = matrix;
         
         initializeComponents();

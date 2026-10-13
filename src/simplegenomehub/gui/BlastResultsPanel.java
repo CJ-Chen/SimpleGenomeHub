@@ -1029,7 +1029,7 @@ public class BlastResultsPanel extends JPanel {
             }
         };
 
-        worker.execute();
+        simplegenomehub.runtime.HubSession.execute(this, worker);
     }
 
     /**
@@ -1499,62 +1499,20 @@ public class BlastResultsPanel extends JPanel {
     private void runTreeCommand(List<String> command, File workingDirectory, File expectedOutput, String stepName)
             throws Exception {
         String commandLine = String.join(" ", command);
-        Process process;
-
+        biocjava.bioDoer.BLAST.ToolProcessRunner.Result result;
         try {
-            ProcessBuilder processBuilder = new ProcessBuilder(command);
-            processBuilder.directory(workingDirectory);
-            processBuilder.redirectErrorStream(true);
-            process = processBuilder.start();
-        } catch (IOException ex) {
-            throw new Exception(stepName + " failed to start.\nCommand: " + commandLine + "\n" + ex.getMessage(), ex);
+            ProcessBuilder builder = new ProcessBuilder(command).directory(workingDirectory);
+            result = simplegenomehub.runtime.HubProcessRunner.run(builder, 30, TimeUnit.MINUTES);
+        } catch (IOException failure) {
+            throw new IOException(stepName + " failed.\nCommand: " + commandLine + "\n" + failure.getMessage(), failure);
         }
-
-        StringBuilder output = new StringBuilder();
-        Thread outputCollector = collectProcessOutput(process, output);
-
-        boolean finished = process.waitFor(30, TimeUnit.MINUTES);
-        if (!finished) {
-            process.destroyForcibly();
-            outputCollector.join(2000);
-            throw new Exception(stepName + " timed out.\nCommand: " + commandLine);
+        if (result.exitCode != 0) {
+            throw new Exception(stepName + " failed with exit code " + result.exitCode
+                + ".\nCommand: " + commandLine + "\nOutput:\n" + result.output);
         }
-
-        outputCollector.join(5000);
-        String commandOutput = output.toString().trim();
-
-        int exitCode = process.exitValue();
-        if (exitCode != 0) {
-            throw new Exception(
-                stepName + " failed with exit code " + exitCode + ".\n"
-                + "Command: " + commandLine + "\n"
-                + "Output:\n" + commandOutput
-            );
-        }
-
         if (expectedOutput != null) {
             ensureNonEmptyFile(expectedOutput, stepName + " output");
         }
-    }
-
-    private Thread collectProcessOutput(Process process, StringBuilder output) {
-        Thread collector = new Thread(() -> {
-            try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()))) {
-                String line;
-                while ((line = reader.readLine()) != null) {
-                    synchronized (output) {
-                        output.append(line).append(System.lineSeparator());
-                    }
-                }
-            } catch (IOException ioEx) {
-                synchronized (output) {
-                    output.append("Failed to read process output: ").append(ioEx.getMessage()).append(System.lineSeparator());
-                }
-            }
-        }, "tree-command-output");
-        collector.setDaemon(true);
-        collector.start();
-        return collector;
     }
 
     private void ensureNonEmptyFile(File file, String description) throws Exception {

@@ -30,16 +30,25 @@ public class BlastExecutor {
     private final BlastDatabaseManager dbManager;
     private final ExecutorService executorService;
     private final ProcessBasedBlastExecutor processExecutor;
+    private final simplegenomehub.runtime.HubSession session;
+    private final java.util.Set<CompletableFuture<?>> running = java.util.concurrent.ConcurrentHashMap.newKeySet();
+    private volatile boolean closed;
     
     /**
      * Initialize BLAST executor
      */
     public BlastExecutor(BlastConfig config, BlastDatabaseManager dbManager) {
+        this(config, dbManager, simplegenomehub.runtime.HubSession.current());
+    }
+
+    public BlastExecutor(BlastConfig config, BlastDatabaseManager dbManager, simplegenomehub.runtime.HubSession session) {
         this.config = config;
+        this.session = session;
         this.dbManager = dbManager;
         this.executorService = Executors.newFixedThreadPool(2); // Limit concurrent BLAST executions
-        this.processExecutor = new ProcessBasedBlastExecutor(config, dbManager);
+        this.processExecutor = new ProcessBasedBlastExecutor(config, dbManager, session);
         
+        if (session != null) session.addCleanup(this::shutdown);
         logger.info("BLAST executor initialized");
     }
     
@@ -47,26 +56,52 @@ public class BlastExecutor {
      * Execute BLAST query synchronously
      */
     public BlastResult executeBlast(BlastQuery query) throws Exception {
-        return executeBlastAsync(query).get();
+        CompletableFuture<BlastResult> future = executeBlastAsync(query);
+        try { return future.get(); }
+        catch (InterruptedException cancelled) { future.cancel(true); Thread.currentThread().interrupt(); throw cancelled; }
     }
     
     /**
      * Execute BLAST query asynchronously
      */
     public CompletableFuture<BlastResult> executeBlastAsync(BlastQuery query) {
-        return CompletableFuture.supplyAsync(() -> {
-            try {
-                return performBlastExecution(query);
-            } catch (Exception e) {
-                logger.log(Level.SEVERE, "BLAST execution failed: " + query.getQueryId(), e);
-                
-                // Return failed result
-                BlastResult failedResult = new BlastResult(query, "Unknown");
-                failedResult.setSuccessful(false);
-                failedResult.setErrorMessage(e.getMessage());
-                return failedResult;
+        CompletableFuture<BlastResult> result = new CompletableFuture<>();
+        java.util.concurrent.atomic.AtomicReference<Thread> thread = new java.util.concurrent.atomic.AtomicReference<>();
+        simplegenomehub.runtime.HubSession.Task lease = session == null ? null : session.beginTask("BLAST", () -> {
+            Thread executing = thread.get();
+            if (executing != null) executing.interrupt();
+        });
+        running.add(result);
+        result.whenComplete((value, failure) -> {
+            if (result.isCancelled()) {
+                Thread executing = thread.get();
+                if (executing != null) executing.interrupt();
             }
-        }, executorService);
+        });
+        try {
+            executorService.execute(() -> {
+                thread.set(Thread.currentThread());
+                try {
+                    if (closed || result.isCancelled() || (session != null && !session.isActive()))
+                        throw new InterruptedException("BLAST cancelled");
+                    result.complete(performBlastExecution(query));
+                } catch (InterruptedException | java.util.concurrent.CancellationException cancelled) {
+                    result.cancel(false);
+                } catch (Exception failure) {
+                    result.completeExceptionally(failure);
+                } finally {
+                    thread.set(null);
+                    running.remove(result);
+                    if (lease != null) lease.close();
+                    Thread.interrupted();
+                }
+            });
+        } catch (RuntimeException rejected) {
+            running.remove(result);
+            if (lease != null) lease.close();
+            result.completeExceptionally(rejected);
+        }
+        return result;
     }
     
     /**
@@ -225,9 +260,8 @@ public class BlastExecutor {
         try {
             // Try to run a simple makeblastdb command to check availability
             ProcessBuilder pb = new ProcessBuilder(config.resolveBlastCommand("makeblastdb"), "-help");
-            Process process = pb.start();
-            int exitCode = process.waitFor();
-            return exitCode == 0;
+            return simplegenomehub.runtime.HubProcessRunner.run(session, pb, 15,
+                java.util.concurrent.TimeUnit.SECONDS).exitCode == 0;
         } catch (Exception e) {
             logger.warning("BLAST unavailable: " + e.getMessage());
             return false;
@@ -240,19 +274,8 @@ public class BlastExecutor {
     public String getBlastVersion() {
         try {
             ProcessBuilder pb = new ProcessBuilder(config.resolveBlastCommand("makeblastdb"), "-version");
-            Process process = pb.start();
-            
-            StringBuilder output = new StringBuilder();
-            try (BufferedReader reader = new BufferedReader(
-                    new InputStreamReader(process.getInputStream()))) {
-                String line;
-                while ((line = reader.readLine()) != null) {
-                    output.append(line).append("\n");
-                }
-            }
-            
-            process.waitFor();
-            return output.toString().trim();
+            return simplegenomehub.runtime.HubProcessRunner.run(session, pb, 15,
+                java.util.concurrent.TimeUnit.SECONDS).output.trim();
         } catch (Exception e) {
             logger.warning("Unable to get BLAST version information: " + e.getMessage());
             return "Unknown version";
@@ -289,8 +312,7 @@ public class BlastExecutor {
                 makeblastdbCmd, "-in", testDb.getAbsolutePath(), 
                 "-dbtype", "nucl", "-out", testDb.getAbsolutePath() + "_db"
             );
-            Process makeDbProcess = makeDbPb.start();
-            if (makeDbProcess.waitFor() != 0) {
+            if (simplegenomehub.runtime.HubProcessRunner.run(session, makeDbPb, 30, java.util.concurrent.TimeUnit.SECONDS).exitCode != 0) {
                 return false;
             }
             
@@ -300,8 +322,7 @@ public class BlastExecutor {
                 "-db", testDb.getAbsolutePath() + "_db",
                 "-out", testQuery.getAbsolutePath() + "_result.txt"
             );
-            Process blastProcess = blastPb.start();
-            return blastProcess.waitFor() == 0;
+            return simplegenomehub.runtime.HubProcessRunner.run(session, blastPb, 30, java.util.concurrent.TimeUnit.SECONDS).exitCode == 0;
             
         } catch (Exception e) {
             logger.log(Level.WARNING, "BLAST functionality test failed", e);
@@ -313,19 +334,15 @@ public class BlastExecutor {
      * Shutdown the executor
      */
     public void shutdown() {
-        logger.info("Shutting down BLAST executor...");
+        closed = true;
+        for (CompletableFuture<?> future : running) future.cancel(true);
         executorService.shutdown();
-        
-        try {
-            if (!executorService.awaitTermination(60, java.util.concurrent.TimeUnit.SECONDS)) {
-                executorService.shutdownNow();
-            }
-        } catch (InterruptedException e) {
-            executorService.shutdownNow();
-            Thread.currentThread().interrupt();
+        boolean interrupted = false;
+        while (!executorService.isTerminated()) {
+            try { executorService.awaitTermination(1, java.util.concurrent.TimeUnit.SECONDS); }
+            catch (InterruptedException failure) { interrupted = true; }
         }
-        
-        logger.info("BLAST executor closed");
+        if (interrupted) Thread.currentThread().interrupt();
     }
     
     /**
@@ -412,8 +429,7 @@ public class BlastExecutor {
             // Test if BLAST is available in system PATH
             try {
                 ProcessBuilder pb = new ProcessBuilder(blastCommand, "-version");
-                Process process = pb.start();
-                int exitCode = process.waitFor();
+                int exitCode = simplegenomehub.runtime.HubProcessRunner.run(session, pb, 15, java.util.concurrent.TimeUnit.SECONDS).exitCode;
                 
                 if (exitCode != 0) {
                     throw new Exception("BLAST test execution failed. Please ensure BLAST+ is installed and available in system PATH, bundled under "

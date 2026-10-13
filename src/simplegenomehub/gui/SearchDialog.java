@@ -80,8 +80,10 @@ public class SearchDialog extends JDialog {
      */
     public SearchDialog(Window parent, SpeciesManager speciesManager, SearchResultListener resultListener) {
         super(parent, "Advanced Species Search", ModalityType.APPLICATION_MODAL);
+        simplegenomehub.runtime.HubSession.attach(this, simplegenomehub.runtime.HubSession.forComponent(parent));
         
         this.speciesManager = speciesManager;
+        simplegenomehub.runtime.HubSession.attach(this, speciesManager.getSession());
         this.resultListener = resultListener;
         this.currentCriteria = new SearchCriteria();
         

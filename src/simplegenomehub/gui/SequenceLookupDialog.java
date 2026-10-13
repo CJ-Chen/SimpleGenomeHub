@@ -60,8 +60,10 @@ public class SequenceLookupDialog extends JDialog {
      */
     public SequenceLookupDialog(Window parent, SpeciesInfo species) {
         super(parent, "Sequence Lookup - " + species.getDisplayName(), ModalityType.MODELESS);
+        simplegenomehub.runtime.HubSession.attach(this, simplegenomehub.runtime.HubSession.forComponent(parent));
 
         this.species = species;
+        simplegenomehub.runtime.HubSession.attach(this, simplegenomehub.runtime.HubSession.forDataPath(species.getSpeciesDir()));
         this.lookupEngine = new CachedSequenceLookup(species);
         this.availableGeneSetFiles = new ArrayList<>();
 
@@ -323,7 +325,7 @@ public class SequenceLookupDialog extends JDialog {
                 }
             };
 
-        worker.execute();
+        simplegenomehub.runtime.HubSession.execute(this, worker);
     }
 
     /**

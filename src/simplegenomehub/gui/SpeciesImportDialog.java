@@ -66,8 +66,10 @@ public class SpeciesImportDialog extends JDialog {
      */
     public SpeciesImportDialog(Window parent, SpeciesManager speciesManager) {
         super(parent, "Import New Species", ModalityType.APPLICATION_MODAL);
+        simplegenomehub.runtime.HubSession.attach(this, simplegenomehub.runtime.HubSession.forComponent(parent));
         
         this.speciesManager = speciesManager;
+        simplegenomehub.runtime.HubSession.attach(this, speciesManager.getSession());
         
         initializeComponents();
         setupLayout();
@@ -540,7 +542,7 @@ public class SpeciesImportDialog extends JDialog {
             }
         });
         
-        worker.execute();
+        simplegenomehub.runtime.HubSession.execute(this, worker);
     }
     
     /**
@@ -721,7 +723,7 @@ public class SpeciesImportDialog extends JDialog {
             }
         });
         
-        worker.execute();
+        simplegenomehub.runtime.HubSession.execute(this, worker);
     }
 
     private void validateFilesWithFix() {
@@ -893,7 +895,7 @@ public class SpeciesImportDialog extends JDialog {
             }
         });
 
-        worker.execute();
+        simplegenomehub.runtime.HubSession.execute(this, worker);
     }
 
     private void importSpeciesWithPreparedAnnotation() {
@@ -1070,7 +1072,7 @@ public class SpeciesImportDialog extends JDialog {
             }
         });
 
-        worker.execute();
+        simplegenomehub.runtime.HubSession.execute(this, worker);
     }
 
     private void clearPreparedAnnotationState() {

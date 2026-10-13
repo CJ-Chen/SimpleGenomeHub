@@ -24,10 +24,11 @@ public class MultipleSyntenyDialog extends JDialog {
 
     public MultipleSyntenyDialog(Window parent, SpeciesInfo initialSpecies, SpeciesManager speciesManager) {
         super(parent, "Multiple Synteny", ModalityType.MODELESS);
+        simplegenomehub.runtime.HubSession.attach(this, simplegenomehub.runtime.HubSession.forComponent(parent));
 
         this.initialSpecies = initialSpecies;
         this.speciesManager = speciesManager;
-
+        simplegenomehub.runtime.HubSession.attach(this, speciesManager.getSession());
         initializeDialog();
         setupPanel();
         setupLayout();

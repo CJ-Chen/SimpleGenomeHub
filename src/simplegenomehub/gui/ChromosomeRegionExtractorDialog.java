@@ -44,7 +44,9 @@ public class ChromosomeRegionExtractorDialog extends JDialog {
     
     public ChromosomeRegionExtractorDialog(Frame parent, SpeciesInfo speciesInfo) {
         super(parent, "Chromosome Region Sequence Extractor", Dialog.ModalityType.MODELESS);
+        simplegenomehub.runtime.HubSession.attach(this, simplegenomehub.runtime.HubSession.forComponent(parent));
         this.speciesInfo = speciesInfo;
+        simplegenomehub.runtime.HubSession.attach(this, simplegenomehub.runtime.HubSession.forDataPath(speciesInfo.getSpeciesDir()));
         initializeComponents();
         setupLayout();
         setupEventHandlers();
@@ -554,7 +556,7 @@ public class ChromosomeRegionExtractorDialog extends JDialog {
             }
         };
         
-        worker.execute();
+        simplegenomehub.runtime.HubSession.execute(this, worker);
     }
     
     /**

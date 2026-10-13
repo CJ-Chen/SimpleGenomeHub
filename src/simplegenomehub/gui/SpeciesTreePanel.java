@@ -3,6 +3,7 @@
  */
 package simplegenomehub.gui;
 
+import simplegenomehub.util.fileio.AnalysisDirectoryResolver;
 import simplegenomehub.blast.BlastConfig;
 import simplegenomehub.model.SpeciesInfo;
 import simplegenomehub.model.SpeciesManager;
@@ -389,6 +390,7 @@ public class SpeciesTreePanel extends JPanel {
         if (selected != null) {
             SpeciesEditDialog dialog = new SpeciesEditDialog(
                 SwingUtilities.getWindowAncestor(this), selected, speciesManager);
+            simplegenomehub.runtime.HubSession.attach(dialog, speciesManager.getSession());
             dialog.setVisible(true);
         }
     }
@@ -451,6 +453,7 @@ public class SpeciesTreePanel extends JPanel {
         SpeciesInfo selected = getSelectedSpecies();
         if (selected != null) {
             ExportDialog dialog = new ExportDialog(SwingUtilities.getWindowAncestor(this), selected);
+            simplegenomehub.runtime.HubSession.attach(dialog, speciesManager.getSession());
             dialog.setVisible(true);
         }
     }
@@ -652,6 +655,7 @@ public class SpeciesTreePanel extends JPanel {
                 species,
                 data.getFile(),
                 () -> speciesManager.updateSpecies(species));
+            simplegenomehub.runtime.HubSession.attach(dialog, speciesManager.getSession());
             dialog.setVisible(true);
         } else {
             EditGeneSetDialog dialog = new EditGeneSetDialog(
@@ -659,6 +663,7 @@ public class SpeciesTreePanel extends JPanel {
                 species,
                 data.getFile(),
                 () -> speciesManager.updateSpecies(species));
+            simplegenomehub.runtime.HubSession.attach(dialog, speciesManager.getSession());
             dialog.setVisible(true);
         }
     }
@@ -798,6 +803,7 @@ public class SpeciesTreePanel extends JPanel {
                 SwingUtilities.getWindowAncestor(this),
                 data.getFile()
             );
+            simplegenomehub.runtime.HubSession.attach(dialog, speciesManager.getSession());
             dialog.setVisible(true);
         } catch (Exception ex) {
             showDetailedErrorDialog(
@@ -978,6 +984,7 @@ public class SpeciesTreePanel extends JPanel {
         DefaultMutableTreeNode functionalNode = new DefaultMutableTreeNode(
             new TreeSectionNodeData("FunctionalAnnotation", functionalDir));
         for (File subDir : subDirs) {
+            if (AnalysisDirectoryResolver.isAnalysisType(subDir.getName())) continue;
             if (!containsAnyFile(subDir)) {
                 continue;
             }
@@ -1009,34 +1016,21 @@ public class SpeciesTreePanel extends JPanel {
     }
 
     private void addGenomeAnalysisNodes(DefaultMutableTreeNode speciesNode, SpeciesInfo species) {
-        File genomeAnalysisDir = species != null ? species.getGenomeAnalysisDir() : null;
-        if (genomeAnalysisDir == null || !genomeAnalysisDir.isDirectory()) {
-            return;
-        }
-
-        File[] subDirs = genomeAnalysisDir.listFiles(File::isDirectory);
-        if (subDirs == null || subDirs.length == 0) {
-            return;
-        }
-
-        Arrays.sort(subDirs, Comparator.comparing(File::getName, String.CASE_INSENSITIVE_ORDER));
-        DefaultMutableTreeNode genomeAnalysisNode = new DefaultMutableTreeNode(
-            new TreeSectionNodeData("GenomeAnalysis", genomeAnalysisDir));
-
-        for (File subDir : subDirs) {
-            if (!containsAnyFile(subDir)) {
-                continue;
-            }
-
-            DefaultMutableTreeNode subDirNode = createGenomeAnalysisSubtree(subDir);
-            if (subDirNode != null) {
-                genomeAnalysisNode.add(subDirNode);
+        if (species == null) return;
+        java.util.List<File> roots = AnalysisDirectoryResolver.existingRoots(species);
+        DefaultMutableTreeNode analysis = new DefaultMutableTreeNode(
+            new TreeSectionNodeData("GenomeAnalysis", species.getGenomeAnalysisDir()));
+        for (File directory : roots) {
+            if (!containsAnyFile(directory)) continue;
+            DefaultMutableTreeNode subtree = createGenomeAnalysisSubtree(directory);
+            if (subtree != null) {
+                // Include the physical location so equal result names remain distinguishable.
+                subtree.setUserObject(new TreeSectionNodeData(directory.getName() + " ("
+                    + directory.getParentFile().getName() + ")", directory));
+                analysis.add(subtree);
             }
         }
-
-        if (genomeAnalysisNode.getChildCount() > 0) {
-            speciesNode.add(genomeAnalysisNode);
-        }
+        if (analysis.getChildCount() > 0) speciesNode.add(analysis);
     }
 
     private DefaultMutableTreeNode createGenomeAnalysisSubtree(File subDir) {

@@ -88,8 +88,10 @@ public class GeneInfoViewerDialog extends JDialog {
      */
     public GeneInfoViewerDialog(Window parent, SpeciesManager speciesManager, SpeciesInfo defaultSpecies) {
         super(parent, "Gene Information Viewer", ModalityType.MODELESS);
+        simplegenomehub.runtime.HubSession.attach(this, simplegenomehub.runtime.HubSession.forComponent(parent));
 
         this.speciesManager = speciesManager;
+        simplegenomehub.runtime.HubSession.attach(this, speciesManager.getSession());
         this.dataRetriever = new GeneDataRetriever();
 
         // Initialize example gene IDs management
@@ -392,7 +394,7 @@ public class GeneInfoViewerDialog extends JDialog {
             }
         };
         
-        worker.execute();
+        simplegenomehub.runtime.HubSession.execute(this, worker);
     }
     
     /**
@@ -468,7 +470,7 @@ public class GeneInfoViewerDialog extends JDialog {
                 }
             };
 
-        annotationWorker.execute();
+        simplegenomehub.runtime.HubSession.execute(this, annotationWorker);
     }
 
     private void handleAnnotationSearchResult(long generation, String searchedGeneId, GeneSearchResult result,

@@ -41,6 +41,7 @@ public class FilePreviewDialog extends JDialog {
      */
     public FilePreviewDialog(Window parent, File file) {
         super(parent, "File Preview - " + file.getName(), ModalityType.APPLICATION_MODAL);
+        simplegenomehub.runtime.HubSession.attach(this, simplegenomehub.runtime.HubSession.forDataPath(file));
         
         this.file = file;
         
@@ -280,7 +281,7 @@ public class FilePreviewDialog extends JDialog {
             }
         };
         
-        worker.execute();
+        simplegenomehub.runtime.HubSession.execute(this, worker);
     }
     
     /**

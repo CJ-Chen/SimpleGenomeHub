@@ -5,7 +5,6 @@ import jigplot.engine.JIGBasePanel;
 
 import java.io.File;
 import java.io.IOException;
-import java.lang.reflect.Field;
 
 /**
  * Exports a full-canvas preview image for an Advanced Circos result folder.
@@ -26,7 +25,7 @@ public final class AdvancedCircosPreviewExporter {
         }
 
         File previewFile = getPreviewFile(projectDir);
-        JIGBasePanel basePanel = extractBasePanel(circos);
+        JIGBasePanel basePanel = circos.getResultPanel();
         if (basePanel == null) {
             throw new IOException("Failed to resolve Advanced Circos canvas for preview export.");
         }
@@ -39,17 +38,4 @@ public final class AdvancedCircosPreviewExporter {
         return new File(projectDir, PREVIEW_FILE_NAME);
     }
 
-    private static JIGBasePanel extractBasePanel(AmazingSuperCircos2 circos) throws IOException {
-        try {
-            Field basePanelField = AmazingSuperCircos2.class.getDeclaredField("jbp");
-            basePanelField.setAccessible(true);
-            Object value = basePanelField.get(circos);
-            if (value instanceof JIGBasePanel) {
-                return (JIGBasePanel) value;
-            }
-            return null;
-        } catch (ReflectiveOperationException ex) {
-            throw new IOException("Failed to access Advanced Circos canvas.", ex);
-        }
-    }
 }

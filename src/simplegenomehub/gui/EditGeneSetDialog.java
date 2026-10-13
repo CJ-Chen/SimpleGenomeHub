@@ -24,7 +24,9 @@ final class EditGeneSetDialog extends JDialog {
 
     EditGeneSetDialog(Window parent, SpeciesInfo species, File geneSetFile, Runnable onUpdateSuccess) {
         super(parent, "Edit Gene Set", ModalityType.MODELESS);
+        simplegenomehub.runtime.HubSession.attach(this, simplegenomehub.runtime.HubSession.forComponent(parent));
         this.species = species;
+        simplegenomehub.runtime.HubSession.attach(this, simplegenomehub.runtime.HubSession.forDataPath(species.getSpeciesDir()));
         this.originalFile = geneSetFile;
         this.onUpdateSuccess = onUpdateSuccess;
         this.geneSetNameField = new JTextField();
@@ -232,7 +234,7 @@ final class EditGeneSetDialog extends JDialog {
             }
         };
 
-        worker.execute();
+        simplegenomehub.runtime.HubSession.execute(this, worker);
     }
 
     private void setControlsEnabled(boolean enabled) {

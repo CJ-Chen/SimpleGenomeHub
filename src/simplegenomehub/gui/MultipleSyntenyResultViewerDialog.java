@@ -83,12 +83,18 @@ public class MultipleSyntenyResultViewerDialog extends JDialog {
 
     public MultipleSyntenyResultViewerDialog(Window parent, File resultDir) throws IOException {
         super(parent, "Multiple Synteny Result Viewer", ModalityType.MODELESS);
+        simplegenomehub.runtime.HubSession.attach(this, simplegenomehub.runtime.HubSession.forDataPath(resultDir));
 
         this.resultDir = resultDir;
         this.scene = MultipleSyntenyResultLoader.load(resultDir);
 
         initializeDialog();
         setupLayout();
+        simplegenomehub.runtime.HubSession session = simplegenomehub.runtime.HubSession.getExplicitOwner(this);
+        if (session != null) {
+            graphPanel.setOwnedDialogRegistrar(window -> SimpleGenomeHubFontManager.registerOwnedWindowTree(window, session));
+            session.guardActionsIn(this);
+        }
     }
 
     public static BufferedImage renderPreviewImage(File resultDir) throws IOException {

@@ -579,7 +579,7 @@ public class GenomeComparePanel extends JPanel {
                 }
             };
 
-        worker.execute();
+        simplegenomehub.runtime.HubSession.execute(this, worker);
     }
 
     private void resetLogArea() {

@@ -6,6 +6,7 @@ import simplegenomehub.util.identification.SpeciesMatchResult.MatchType;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.stream.Collectors;
+import simplegenomehub.runtime.HubSession;
 
 /**
  * Main engine for identifying species based on sequence IDs
@@ -15,6 +16,7 @@ public class SpeciesIdentificationEngine {
     
     private Map<String, SpeciesSequenceIndex> speciesIndexCache;
     private ExecutorService executorService;
+    private Executor taskExecutor;
     private boolean cacheWarmedUp = false;
     private simplegenomehub.model.SpeciesManager speciesManager;
     
@@ -28,7 +30,22 @@ public class SpeciesIdentificationEngine {
     public SpeciesIdentificationEngine(simplegenomehub.model.SpeciesManager speciesManager) {
         this.speciesManager = speciesManager;
         this.speciesIndexCache = new ConcurrentHashMap<>();
-        this.executorService = Executors.newCachedThreadPool();
+        this.executorService = Executors.newCachedThreadPool(runnable -> {
+            Thread thread = new Thread(runnable, "SGH-species-identification");
+            thread.setDaemon(true);
+            return thread;
+        });
+        HubSession session = speciesManager.getSession();
+        this.taskExecutor = runnable -> {
+            HubSession.Task task = session == null ? null : session.beginTask("Species identification", null);
+            try {
+                executorService.execute(() -> {
+                    try { runnable.run(); }
+                    finally { if (task != null) task.close(); }
+                });
+            } catch (RuntimeException failure) { if (task != null) task.close(); throw failure; }
+        };
+        if (session != null) session.addCleanup(this::shutdown);
     }
     
     /**
@@ -63,7 +80,7 @@ public class SpeciesIdentificationEngine {
         
         for (SpeciesInfo species : speciesManager.getAllSpecies()) {
             CompletableFuture<SpeciesMatchResult> future = CompletableFuture
-                .supplyAsync(() -> processSpecies(species, cleanIds), executorService);
+                .supplyAsync(() -> processSpecies(species, cleanIds), taskExecutor);
             futures.add(future);
         }
         
@@ -141,7 +158,7 @@ public class SpeciesIdentificationEngine {
      * Get or create species sequence index
      */
     private SpeciesSequenceIndex getOrCreateIndex(SpeciesInfo species) {
-        String key = species.getSpeciesName() + "." + species.getVersion();
+        String key = species.getSpeciesDir().getAbsolutePath();
         return speciesIndexCache.computeIfAbsent(key, k -> {
             SpeciesSequenceIndex index = new SpeciesSequenceIndex(species);
             index.buildIndex();
@@ -166,7 +183,7 @@ public class SpeciesIdentificationEngine {
                 } catch (Exception e) {
                     System.err.println("Failed to build index for " + species.getSpeciesName() + ": " + e.getMessage());
                 }
-            }, executorService))
+            }, taskExecutor))
             .collect(Collectors.toList());
         
         // Wait for all to complete

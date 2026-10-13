@@ -90,7 +90,9 @@ public class KEGGEnrichmentDialog extends JDialog {
     
     public KEGGEnrichmentDialog(Frame parent, SpeciesInfo species) {
         super(parent, "KEGG Enrichment Analysis - " + species.getSpeciesDirectoryName(), false);
+        simplegenomehub.runtime.HubSession.attach(this, simplegenomehub.runtime.HubSession.forComponent(parent));
         this.targetSpecies = species;
+        simplegenomehub.runtime.HubSession.attach(this, simplegenomehub.runtime.HubSession.forDataPath(species.getSpeciesDir()));
         this.availableGeneSetFiles = new ArrayList<>();
         
         initComponents();
@@ -896,7 +898,7 @@ public class KEGGEnrichmentDialog extends JDialog {
             }
         };
         
-        worker.execute();
+        simplegenomehub.runtime.HubSession.execute(this, worker);
     }
     
     private List<String> parseGeneList(String geneListText) {
@@ -1390,6 +1392,7 @@ public class KEGGEnrichmentDialog extends JDialog {
         
         public KEGGVisualizationConfigDialog(Dialog parent) {
             super(parent, "KEGG Visualization Configuration", true);
+        simplegenomehub.runtime.HubSession.attach(this, simplegenomehub.runtime.HubSession.forComponent(parent));
             initComponents();
             setupEventListeners();
             pack();
@@ -1744,7 +1747,7 @@ public class KEGGEnrichmentDialog extends JDialog {
                 }
             };
 
-        worker.execute();
+        simplegenomehub.runtime.HubSession.execute(this, worker);
     }
 
     private List<String> readGeneListFromFile(File file) throws IOException {

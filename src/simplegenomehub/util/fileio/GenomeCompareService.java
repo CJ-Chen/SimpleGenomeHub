@@ -200,6 +200,12 @@ public final class GenomeCompareService {
             }
 
             OneStepMCScanXPureJava runner = new OneStepMCScanXPureJava();
+            simplegenomehub.runtime.HubSession session = simplegenomehub.runtime.HubSession.current();
+            simplegenomehub.blast.BlastConfig blastConfig = new simplegenomehub.blast.BlastConfig();
+            runner.setToolResolver(name -> "diamond".equals(name)
+                ? simplegenomehub.runtime.HubToolResolver.resolve(name, null) : blastConfig.resolveBlastCommand(name));
+            runner.setCancellationRequested(() -> session != null && !session.isActive());
+            if (session != null) runner.setProcessRegistrar(process -> session.registerProcess(process));
             runner.setWkDirectory(outputDir);
             runner.setInGenome_1(filteredInputs1.genomeFile);
             runner.setInGenome_2(filteredInputs2.genomeFile);

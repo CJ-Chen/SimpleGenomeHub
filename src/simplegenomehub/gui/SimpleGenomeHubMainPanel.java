@@ -8,6 +8,11 @@ import simplegenomehub.model.*;
 import javax.swing.*;
 import java.awt.*;
 import java.io.File;
+import java.io.IOException;
+import java.util.concurrent.CompletionStage;
+import simplegenomehub.runtime.HubHostContext;
+import simplegenomehub.runtime.HubSession;
+import biocjava.GUIexcutors.TabCloseGuard;
 
 /**
  * Main GUI panel for SimpleGenomeHub application
@@ -15,11 +20,12 @@ import java.io.File;
  * 
  * @author SimpleGenomeHub
  */
-public class SimpleGenomeHubMainPanel extends JPanel implements SpeciesManager.SpeciesManagerListener {
+public class SimpleGenomeHubMainPanel extends JPanel implements SpeciesManager.SpeciesManagerListener, TabCloseGuard {
     
     // Core components
     private SimpleGenomeHubConfig config;
     private SpeciesManager speciesManager;
+    private final HubSession session;
     
     // GUI components
     private SpeciesTreePanel speciesTreePanel;
@@ -30,14 +36,48 @@ public class SimpleGenomeHubMainPanel extends JPanel implements SpeciesManager.S
      * Constructor
      */
     public SimpleGenomeHubMainPanel() {
-        initializeComponents();
-        setupLayout();
-        setupEventHandlers();
+        this(HubHostContext.embedded(null));
+    }
+
+    public SimpleGenomeHubMainPanel(HubHostContext hostContext) {
+        hostContext.bindOwnerIfAbsent(this);
+        config = SimpleGenomeHubConfig.getInstance();
+        try {
+            session = new HubSession(hostContext, config.getDataRootDir());
+        } catch (IOException failure) {
+            throw new IllegalStateException("Cannot open Simple Genome Hub: " + failure.getMessage(), failure);
+        }
+        HubSession.attach(this, session);
+        try {
+            initializeComponents();
+            setupLayout();
+            setupEventHandlers();
+            SimpleGenomeHubFontManager.registerRoot(this, session);
+        } catch (RuntimeException | Error failure) {
+            session.addCleanup(() -> {
+                if (speciesManager != null) speciesManager.shutdown();
+                SwingUtilities.invokeLater(() -> SimpleGenomeHubFontManager.unregisterRoot(this));
+            });
+            session.closeAsync();
+            throw failure;
+        }
+        session.addCleanup(() -> {
+            speciesManager.removeListener(this);
+            speciesManager.shutdown();
+            Runnable disposeUi = () -> {
+                for (Window window : session.getOwnedWindows()) window.dispose();
+                SimpleGenomeHubFontManager.unregisterRoot(this);
+            };
+            if (SwingUtilities.isEventDispatchThread()) disposeUi.run();
+            else try { SwingUtilities.invokeAndWait(disposeUi); }
+            catch (Exception failure) { throw new IllegalStateException(failure); }
+        });
         // Don't call refreshData() here since SpeciesManager constructor already loads data
         // refreshData();
         
         // Just update UI components to reflect the loaded data
         SwingUtilities.invokeLater(() -> {
+            if (!session.isActive()) return;
             speciesTreePanel.clearFilter();
             speciesInfoPanel.setSpecies(null);
             setStatus("Ready - " + speciesManager.getSpeciesCount() + " species loaded");
@@ -49,10 +89,8 @@ public class SimpleGenomeHubMainPanel extends JPanel implements SpeciesManager.S
      */
     private void initializeComponents() {
         SimpleGenomeHubFontManager.install();
-        SimpleGenomeHubUi.installGlobalMenuStyling();
-        SimpleGenomeHubUi.installGlobalDialogStyling();
-        config = SimpleGenomeHubConfig.getInstance();
-        speciesManager = new SpeciesManager();
+        speciesManager = new SpeciesManager(session.getDataRoot());
+        speciesManager.setSession(session);
         speciesManager.addListener(this);
         
         // Create GUI components
@@ -204,8 +242,10 @@ public class SimpleGenomeHubMainPanel extends JPanel implements SpeciesManager.S
      * Show configuration dialog
      */
     private void showConfigurationDialog() {
+        if (!session.isActive()) return;
         ConfigurationDialog dialog = new ConfigurationDialog(
             SwingUtilities.getWindowAncestor(this), config, speciesManager);
+        HubSession.attach(dialog, session);
         dialog.setVisible(true);
     }
     
@@ -213,6 +253,7 @@ public class SimpleGenomeHubMainPanel extends JPanel implements SpeciesManager.S
      * Show import dialog
      */
     private void showImportDialog() {
+        if (!session.isActive()) return;
         if (!config.isDataRootConfigured()) {
             JOptionPane.showMessageDialog(this, 
                 "Please configure the data directory first using the Config button.",
@@ -223,6 +264,7 @@ public class SimpleGenomeHubMainPanel extends JPanel implements SpeciesManager.S
         
         SpeciesImportDialog dialog = new SpeciesImportDialog(
             SwingUtilities.getWindowAncestor(this), speciesManager);
+        HubSession.attach(dialog, session);
         dialog.setVisible(true);
     }
 
@@ -235,7 +277,9 @@ public class SimpleGenomeHubMainPanel extends JPanel implements SpeciesManager.S
      * Refresh all data
      */
     private void refreshData() {
+        final long generation = session.getGeneration();
         SwingUtilities.invokeLater(() -> {
+            if (!session.accepts(generation)) return;
             setStatus("Refreshing species data...");
             
             // Refresh species manager
@@ -263,7 +307,9 @@ public class SimpleGenomeHubMainPanel extends JPanel implements SpeciesManager.S
     
     @Override
     public void onSpeciesAdded(SpeciesInfo species) {
+        final long generation = session.getGeneration();
         SwingUtilities.invokeLater(() -> {
+            if (!session.accepts(generation)) return;
             speciesTreePanel.refreshTree();
             setStatus("Species added: " + species.getSpeciesDirectoryName());
         });
@@ -271,7 +317,9 @@ public class SimpleGenomeHubMainPanel extends JPanel implements SpeciesManager.S
     
     @Override
     public void onSpeciesRemoved(SpeciesInfo species) {
+        final long generation = session.getGeneration();
         SwingUtilities.invokeLater(() -> {
+            if (!session.accepts(generation)) return;
             speciesTreePanel.refreshTree();
             speciesInfoPanel.setSpecies(null);
             setStatus("Species removed: " + species.getSpeciesDirectoryName());
@@ -280,7 +328,9 @@ public class SimpleGenomeHubMainPanel extends JPanel implements SpeciesManager.S
     
     @Override
     public void onSpeciesUpdated(SpeciesInfo species) {
+        final long generation = session.getGeneration();
         SwingUtilities.invokeLater(() -> {
+            if (!session.accepts(generation)) return;
             speciesTreePanel.refreshTree();
             if (speciesInfoPanel.getCurrentSpecies() == species) {
                 speciesInfoPanel.setSpecies(species);
@@ -292,6 +342,12 @@ public class SimpleGenomeHubMainPanel extends JPanel implements SpeciesManager.S
     @Override
     public void onDataDirectoryChanged(File newDir) {
         SwingUtilities.invokeLater(() -> {
+            if (!session.isActive() || session.getDataRoot() == null
+                || !session.getDataRoot().equals(newDir)) return;
+            // Model dialogs retain species objects from the old root. Retire
+            // them before accepting writes in the replacement session.
+            for (Window window : session.getOwnedWindows())
+                if (!(window instanceof ConfigurationDialog)) window.dispose();
             refreshData();
             setStatus("Data directory changed to: " + newDir.getAbsolutePath());
             
@@ -313,21 +369,60 @@ public class SimpleGenomeHubMainPanel extends JPanel implements SpeciesManager.S
     public SpeciesManager getSpeciesManager() {
         return speciesManager;
     }
+
+    public HubSession getHubSession() { return session; }
+
+    @Override public boolean requestClose(Component parentForDialog) {
+        // Asynchronous callers use requestCloseAsync. Synchronous callers must
+        // keep the page until its completion has actually been observed.
+        return session.getState() == HubSession.State.CLOSED;
+    }
+
+    @Override public CompletionStage<Boolean> requestCloseAsync(Component parentForDialog) {
+        if (session.isActive() && session.hasRunningTasks()) {
+            int answer = JOptionPane.showOptionDialog(parentForDialog,
+                "Hub tasks are still running. Wait for them to finish before closing?",
+                "Close Simple Genome Hub", JOptionPane.YES_NO_OPTION,
+                JOptionPane.QUESTION_MESSAGE, null,
+                new String[]{"Wait and close", "Keep page open"}, "Keep page open");
+            if (answer != JOptionPane.YES_OPTION)
+                return java.util.concurrent.CompletableFuture.completedFuture(Boolean.FALSE);
+        }
+        setStatus("Closing - waiting for Hub tasks and processes...");
+        disableTree(this);
+        for (Window window : session.getOwnedWindows()) disableTree(window);
+        return session.closeAsync();
+    }
+
+    private static void disableTree(Component component) {
+        component.setEnabled(false);
+        if (component instanceof Container)
+            for (Component child : ((Container) component).getComponents()) disableTree(child);
+    }
     
     public static void main(String[] args) {
         SwingUtilities.invokeLater(() -> {
-            SimpleGenomeHubFontManager.install();
             // Use default Swing look and feel
             
             // Create main frame
             JFrame frame = new JFrame("SimpleGenomeHub");
-            frame.setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
+            frame.setDefaultCloseOperation(JFrame.DO_NOTHING_ON_CLOSE);
             frame.setSize(1510, 860);
             frame.setLocationRelativeTo(null);
             
             // Add main panel
-            SimpleGenomeHubMainPanel mainPanel = new SimpleGenomeHubMainPanel();
+            SimpleGenomeHubMainPanel mainPanel = new SimpleGenomeHubMainPanel(HubHostContext.standalone(frame));
             frame.add(mainPanel);
+            frame.addWindowListener(new java.awt.event.WindowAdapter() {
+                @Override public void windowClosing(java.awt.event.WindowEvent event) {
+                    mainPanel.requestCloseAsync(frame).whenComplete((closed, failure) ->
+                        SwingUtilities.invokeLater(() -> {
+                            if (failure != null) JOptionPane.showMessageDialog(frame,
+                                failure.getMessage(), "Cannot close Hub", JOptionPane.ERROR_MESSAGE);
+                            else if (Boolean.TRUE.equals(closed)) frame.dispose();
+                        }));
+                }
+            });
             
             // Set window icon (if available)
             try {

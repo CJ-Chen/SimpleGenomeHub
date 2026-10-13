@@ -94,8 +94,7 @@ public class SpeciesInfo {
         // Initialize type-specific annotation directories
         initializeAnnotationTypeDirectories();
         
-        // Create directories if they don't exist
-        createDirectoryStructure();
+        // Binding existing paths is read-only. Writers explicitly call createDirectoryStructure().
     }
     
     /**
@@ -114,46 +113,20 @@ public class SpeciesInfo {
      * Create the directory structure for this species
      */
     public boolean createDirectoryStructure() {
-        if (speciesDir == null) {
-            return false;
-        }
-        
+        if (speciesDir == null) return false;
         try {
-            if (!speciesDir.exists()) {
-                speciesDir.mkdirs();
+            for (File directory : Arrays.asList(speciesDir, sequenceDir, annotationDir,
+                    expressionDir, functionalAnnotationDir, geneSetDir, genomeAnalysisDir)) {
+                java.nio.file.Files.createDirectories(directory.toPath());
             }
-            if (!sequenceDir.exists()) {
-                sequenceDir.mkdirs();
-            }
-            if (!annotationDir.exists()) {
-                annotationDir.mkdirs();
-            }
-            if (!expressionDir.exists()) {
-                expressionDir.mkdirs();
-            }
-            if (!functionalAnnotationDir.exists()) {
-                functionalAnnotationDir.mkdirs();
-            }
-            if (!geneSetDir.exists()) {
-                geneSetDir.mkdirs();
-            }
-            if (!genomeAnalysisDir.exists()) {
-                genomeAnalysisDir.mkdirs();
-            }
-            
-            // Create type-specific annotation directories
-            for (File typeDir : annotationTypeDirs.values()) {
-                if (!typeDir.exists()) {
-                    typeDir.mkdirs();
-                }
-            }
-            
+            for (File directory : annotationTypeDirs.values()) java.nio.file.Files.createDirectories(directory.toPath());
             return true;
-        } catch (SecurityException e) {
+        } catch (java.io.IOException | SecurityException e) {
+            logger.warning("Failed to create species directories: " + e.getMessage());
             return false;
         }
     }
-    
+
     /**
      * Get the directory name for this species (Species.version format)
      */
@@ -490,7 +463,7 @@ public class SpeciesInfo {
                             // Generate metadata if not available
                             logger.info("Generating metadata for " + type.getShortName());
                             AnnotationMetadata metadata = AnnotationMetadata.analyzeFile(dataFile, type);
-                            setAnnotationMetadata(type, metadata);
+                            annotationMetadata.put(type, metadata);
                         }
                         
                         hasAnyAnnotations = true;
@@ -560,7 +533,7 @@ public class SpeciesInfo {
                     if (type != null) {
                         logger.info("Generating metadata for legacy file: " + legacyFile.getName());
                         AnnotationMetadata metadata = AnnotationMetadata.analyzeFile(legacyFile, type);
-                        setAnnotationMetadata(type, metadata);
+                        annotationMetadata.put(type, metadata);
                         hasAnyAnnotations = true;
                     }
                 }
@@ -670,6 +643,10 @@ public class SpeciesInfo {
     /**
      * Set annotation metadata for specific type
      */
+    public void setAnnotationMetadataInMemory(GeneAnnotationData.AnnotationType type, AnnotationMetadata metadata) {
+        annotationMetadata.put(type, metadata);
+    }
+
     public void setAnnotationMetadata(GeneAnnotationData.AnnotationType type, AnnotationMetadata metadata) {
         annotationMetadata.put(type, metadata);
         
@@ -677,7 +654,10 @@ public class SpeciesInfo {
         File typeDir = annotationTypeDirs.get(type);
         if (typeDir != null && typeDir.exists()) {
             File metadataFile = new File(typeDir, type.getShortName() + ".metadata.json");
-            metadata.saveToFile(metadataFile);
+            if (!metadata.saveToFile(metadataFile) && !java.awt.GraphicsEnvironment.isHeadless()) {
+                javax.swing.JOptionPane.showMessageDialog(null, "Failed to save annotation metadata: " + metadataFile,
+                    "Save Failed", javax.swing.JOptionPane.ERROR_MESSAGE);
+            }
         }
     }
     

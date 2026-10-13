@@ -5,6 +5,7 @@ import simplegenomehub.config.SimpleGenomeHubConfig;
 import simplegenomehub.model.SpeciesInfo;
 
 import java.awt.Component;
+import simplegenomehub.runtime.HubSession;
 import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
@@ -79,12 +80,12 @@ public final class GoOboManager {
         }
 
         File speciesGoObo = getSpeciesGoOboFile(species);
-        if (speciesGoObo.isFile()) {
+        if (speciesGoObo != null && speciesGoObo.isFile()) {
             return buildResult(speciesGoObo, SourceType.SPECIES_CACHE);
         }
 
         File legacyObo = getLegacySpeciesOboFile(species);
-        if (legacyObo.isFile()) {
+        if (legacyObo != null && legacyObo.isFile()) {
             return buildResult(legacyObo, SourceType.LEGACY_SPECIES_CACHE);
         }
 
@@ -138,7 +139,7 @@ public final class GoOboManager {
             copyWithOptionalMd5(sourceOboFile, getSpeciesGoOboFile(species), getSpeciesGoMd5File(species));
 
             if (updateGlobalCache) {
-                cacheAsGlobalDefault(sourceOboFile, "species_cache");
+                if (!cacheAsGlobalDefault(sourceOboFile, "species_cache")) return false;
             }
 
             return true;
@@ -162,9 +163,9 @@ public final class GoOboManager {
             copyWithOptionalMd5(sourceOboFile, getGlobalOboFile(), getGlobalMd5File());
 
             SimpleGenomeHubConfig config = SimpleGenomeHubConfig.getInstance();
-            config.setProperty(SimpleGenomeHubConfig.GO_OBO_GLOBAL_PATH, getGlobalOboFile().getAbsolutePath());
-            config.setProperty(SimpleGenomeHubConfig.GO_OBO_LAST_SOURCE, sourceLabel);
-            config.setProperty(SimpleGenomeHubConfig.GO_OBO_LAST_VERIFIED_EPOCH, String.valueOf(System.currentTimeMillis()));
+            config.setPropertyChecked(SimpleGenomeHubConfig.GO_OBO_GLOBAL_PATH, getGlobalOboFile().getAbsolutePath());
+            config.setPropertyChecked(SimpleGenomeHubConfig.GO_OBO_LAST_SOURCE, sourceLabel);
+            config.setPropertyChecked(SimpleGenomeHubConfig.GO_OBO_LAST_VERIFIED_EPOCH, String.valueOf(System.currentTimeMillis()));
             return true;
         } catch (IOException e) {
             logger.log(Level.WARNING, "Failed to cache GO OBO globally", e);
@@ -182,13 +183,35 @@ public final class GoOboManager {
     }
 
     public static void downloadLatestToGlobalCache(Component parent, Runnable onComplete) {
-        File homeDir = SimpleGenomeHubConfig.getInstance().getHomeDir();
-        GoOboProvider.downloadLatestOboAndThen(homeDir, parent, oboPath -> {
-            SimpleGenomeHubConfig config = SimpleGenomeHubConfig.getInstance();
-            config.setProperty(SimpleGenomeHubConfig.GO_OBO_GLOBAL_PATH, oboPath);
-            config.setProperty(SimpleGenomeHubConfig.GO_OBO_LAST_SOURCE, "tbtools_feijipan");
-            config.setProperty(SimpleGenomeHubConfig.GO_OBO_LAST_VERIFIED_EPOCH, String.valueOf(System.currentTimeMillis()));
-        }, onComplete);
+        HubSession session = HubSession.forComponent(parent);
+        final long generation = session == null ? 0 : session.getGeneration();
+        final HubSession.Task task = session == null ? null : session.beginTask("Download GO cache", null);
+        try {
+            File home = SimpleGenomeHubConfig.getInstance().getHomeDir();
+            Files.createDirectories(home.toPath());
+            File staging = Files.createTempDirectory(home.toPath(), ".go-download-").toFile();
+            GoOboProvider.downloadLatestOboAndThen(staging, parent, path -> {
+                if (session != null && !session.accepts(generation)) return;
+                if (!cacheAsGlobalDefault(new File(path), "tbtools_feijipan")) {
+                    javax.swing.JOptionPane.showMessageDialog(parent, "Failed to publish downloaded GO cache.",
+                        "Cache Error", javax.swing.JOptionPane.ERROR_MESSAGE);
+                }
+            }, () -> {
+                try { deleteStaging(staging); if (onComplete != null && (session == null || session.accepts(generation))) onComplete.run(); }
+                finally { if (task != null) task.close(); }
+            });
+        } catch (IOException | RuntimeException e) {
+            if (task != null) task.close();
+            javax.swing.JOptionPane.showMessageDialog(parent, "Failed to prepare GO download: " + e.getMessage());
+        }
+    }
+
+    static void deleteStaging(File directory) {
+        File[] files = directory.listFiles();
+        if (files != null) for (File file : files) {
+            if (file.isDirectory()) deleteStaging(file); else file.delete();
+        }
+        directory.delete();
     }
 
     private static ResolutionResult buildResult(File file, SourceType sourceType) {
@@ -233,11 +256,8 @@ public final class GoOboManager {
             parent.mkdirs();
         }
 
-        Files.copy(sourceObo.toPath(), targetObo.toPath(), StandardCopyOption.REPLACE_EXISTING);
-
         File sourceMd5 = new File(sourceObo.getParentFile(), "go-basic.obo.md5");
-        if (sourceMd5.isFile() && targetMd5 != null) {
-            Files.copy(sourceMd5.toPath(), targetMd5.toPath(), StandardCopyOption.REPLACE_EXISTING);
-        }
+        AtomicFiles.copyPair(sourceObo.toPath(), targetObo.toPath(), sourceMd5.toPath(),
+            targetMd5 == null ? null : targetMd5.toPath());
     }
 }

@@ -24,10 +24,11 @@ public class GenomeCompareDialog extends JDialog {
 
     public GenomeCompareDialog(Window parent, SpeciesInfo initialSpecies, SpeciesManager speciesManager) {
         super(parent, "MCscanX (Pure Java)", ModalityType.MODELESS);
+        simplegenomehub.runtime.HubSession.attach(this, simplegenomehub.runtime.HubSession.forComponent(parent));
 
         this.initialSpecies = initialSpecies;
         this.speciesManager = speciesManager;
-
+        simplegenomehub.runtime.HubSession.attach(this, speciesManager.getSession());
         initializeDialog();
         setupComparePanel();
         setupLayout();

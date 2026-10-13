@@ -4,6 +4,7 @@
 package simplegenomehub.model;
 
 import simplegenomehub.config.SimpleGenomeHubVersion;
+import simplegenomehub.util.fileio.AtomicFiles;
 
 import java.io.*;
 import java.nio.charset.StandardCharsets;
@@ -111,62 +112,74 @@ public class GenomeData {
      * Save genome data to stat.txt file
      */
     public boolean saveToFile(File statsFile) {
-        try (BufferedWriter writer = new BufferedWriter(
-                new OutputStreamWriter(new FileOutputStream(statsFile), StandardCharsets.UTF_8))) {
-            writer.write(SimpleGenomeHubVersion.STATS_FILE_HEADER);
-            writer.write(System.lineSeparator());
-
-            writePropertyLine(writer, "genome.size", String.valueOf(genomeSize));
-            writePropertyLine(writer, "gene.count", String.valueOf(geneCount));
-            writePropertyLine(writer, "transcript.count", String.valueOf(transcriptCount));
-            writePropertyLine(writer, "cds.count", String.valueOf(cdsCount));
-            writePropertyLine(writer, "protein.count", String.valueOf(proteinCount));
-            writePropertyLine(writer, "chromosome.count", String.valueOf(chromosomeCount));
-            writePropertyLine(writer, "scaffold.count", String.valueOf(scaffoldCount));
-
-            if (genomeFileName != null) {
-                writePropertyLine(writer, "genome.file", escapePropertyValue(genomeFileName));
-            }
-            if (annotationFileName != null) {
-                writePropertyLine(writer, "annotation.file", escapePropertyValue(annotationFileName));
-            }
-
-            writePropertyLine(writer, "has.index", String.valueOf(hasIndex));
-            writePropertyLine(writer, "assembly.level", escapePropertyValue(assemblyLevel));
-            writePropertyLine(writer, "annotation.source", escapePropertyValue(annotationSource));
-            writePropertyLine(writer, "gc.content", String.valueOf(gcContent));
-            writePropertyLine(writer, "n50", String.valueOf(n50));
-
-            if (!chromosomeStats.isEmpty()) {
-                writer.write(System.lineSeparator());
-                writer.write("#####################chromosome stat");
-                writer.write(System.lineSeparator());
-
+        try {
+            AtomicFiles.withLock(statsFile.toPath(), () -> {
+                Properties props = AtomicFiles.readProperties(statsFile.toPath());
+                // Only the indexed chromosome statistics belong to this writer.
+                props.keySet().removeIf(key -> key.toString().matches("chromosome[0-9]+\\.(name|size|gc)"));
+                props.setProperty("genome.size", String.valueOf(genomeSize));
+                props.setProperty("gene.count", String.valueOf(geneCount));
+                props.setProperty("transcript.count", String.valueOf(transcriptCount));
+                props.setProperty("cds.count", String.valueOf(cdsCount));
+                props.setProperty("protein.count", String.valueOf(proteinCount));
+                props.setProperty("chromosome.count", String.valueOf(chromosomeCount));
+                props.setProperty("scaffold.count", String.valueOf(scaffoldCount));
+                if (genomeFileName != null) props.setProperty("genome.file", genomeFileName);
+                if (annotationFileName != null) props.setProperty("annotation.file", annotationFileName);
+                props.setProperty("has.index", String.valueOf(hasIndex));
+                props.setProperty("assembly.level", assemblyLevel == null ? "unknown" : assemblyLevel);
+                props.setProperty("annotation.source", annotationSource == null ? "unknown" : annotationSource);
+                props.setProperty("gc.content", String.valueOf(gcContent));
+                props.setProperty("n50", String.valueOf(n50));
                 for (int i = 0; i < chromosomeStats.size(); i++) {
-                    ChromosomeStat chromosomeStat = chromosomeStats.get(i);
-                    int index = i + 1;
-
-                    writePropertyLine(writer,
-                        "chromosome" + index + ".name",
-                        escapePropertyValue(chromosomeStat.getName()));
-                    writePropertyLine(writer,
-                        "chromosome" + index + ".size",
-                        String.valueOf(chromosomeStat.getSize()));
-                    writePropertyLine(writer,
-                        "chromosome" + index + ".gc",
-                        String.format(Locale.US, "%.4f", chromosomeStat.getGcContent()));
+                    ChromosomeStat chromosome = chromosomeStats.get(i);
+                    String prefix = "chromosome" + (i + 1);
+                    props.setProperty(prefix + ".name", chromosome.getName());
+                    props.setProperty(prefix + ".size", String.valueOf(chromosome.getSize()));
+                    props.setProperty(prefix + ".gc", String.format(Locale.US, "%.4f", chromosome.getGcContent()));
                 }
-            }
-
-            writer.flush();
-            logger.info("Saved genome data to: " + statsFile.getAbsolutePath());
+                AtomicFiles.write(statsFile.toPath(), output -> {
+                    BufferedWriter writer = new BufferedWriter(output);
+                    writer.write(SimpleGenomeHubVersion.STATS_FILE_HEADER);
+                    writer.newLine();
+                    String[] summaryKeys = {"genome.size", "gene.count", "transcript.count", "cds.count",
+                        "protein.count", "chromosome.count", "scaffold.count", "genome.file", "annotation.file",
+                        "has.index", "assembly.level", "annotation.source", "gc.content", "n50"};
+                    for (String key : summaryKeys) {
+                        String value = props.getProperty(key);
+                        if (value != null) writePropertyLine(writer, key, escapePropertyValue(value));
+                        props.remove(key);
+                    }
+                    // Old region-set readers find chromosome coordinates by this
+                    // exact section marker rather than Properties.load().
+                    writer.newLine();
+                    writer.write("#####################chromosome stat");
+                    writer.newLine();
+                    for (int i = 0; i < chromosomeStats.size(); i++) {
+                        String prefix = "chromosome" + (i + 1);
+                        for (String suffix : new String[]{".name", ".size", ".gc"}) {
+                            String key = prefix + suffix;
+                            writePropertyLine(writer, key, escapePropertyValue(props.getProperty(key)));
+                            props.remove(key);
+                        }
+                    }
+                    if (!props.isEmpty()) {
+                        writer.newLine();
+                        writer.write("#####################additional properties");
+                        writer.newLine();
+                        props.store(writer, "Preserved extension fields");
+                    }
+                    writer.flush();
+                });
+                return null;
+            });
             return true;
         } catch (IOException e) {
             logger.log(Level.SEVERE, "Failed to save genome data to: " + statsFile.getAbsolutePath(), e);
             return false;
         }
     }
-    
+
     /**
      * Get formatted genome size string
      */

@@ -66,7 +66,7 @@ final class RegionSetBlastLauncher {
             }
         };
 
-        worker.execute();
+        simplegenomehub.runtime.HubSession.execute(parentComponent, worker);
         progressDialog.setVisible(true);
     }
 
@@ -133,7 +133,7 @@ final class RegionSetBlastLauncher {
             }
         };
 
-        worker.execute();
+        simplegenomehub.runtime.HubSession.execute(parentComponent, worker);
         progressDialog.setVisible(true);
     }
 

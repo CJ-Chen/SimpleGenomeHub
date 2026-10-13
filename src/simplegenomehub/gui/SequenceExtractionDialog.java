@@ -72,8 +72,10 @@ public class SequenceExtractionDialog extends JDialog {
      */
     public SequenceExtractionDialog(Window parent, SpeciesInfo species) {
         super(parent, "Extract Sequences - " + species.getDisplayName(), ModalityType.MODELESS);
+        simplegenomehub.runtime.HubSession.attach(this, simplegenomehub.runtime.HubSession.forComponent(parent));
         
         this.species = species;
+        simplegenomehub.runtime.HubSession.attach(this, simplegenomehub.runtime.HubSession.forDataPath(species.getSpeciesDir()));
         
         initializeComponents();
         setupLayout();
@@ -754,7 +756,7 @@ public class SequenceExtractionDialog extends JDialog {
             }
         });
         
-        worker.execute();
+        simplegenomehub.runtime.HubSession.execute(this, worker);
     }
     
     /**
@@ -991,7 +993,7 @@ public class SequenceExtractionDialog extends JDialog {
             }
         });
         
-        worker.execute();
+        simplegenomehub.runtime.HubSession.execute(this, worker);
     }
     
     /**

@@ -59,7 +59,9 @@ public class ExpressionHeatmapDialog extends JDialog {
      */
     public ExpressionHeatmapDialog(Window parent, SpeciesInfo species) {
         super(parent, "Expression Heatmap Visualization - " + species.getSpeciesName(), ModalityType.APPLICATION_MODAL);
+        simplegenomehub.runtime.HubSession.attach(this, simplegenomehub.runtime.HubSession.forComponent(parent));
         this.targetSpecies = species;
+        simplegenomehub.runtime.HubSession.attach(this, simplegenomehub.runtime.HubSession.forDataPath(species.getSpeciesDir()));
         this.experiments = species.getExpressionExperiments();
         
         initializeComponents();

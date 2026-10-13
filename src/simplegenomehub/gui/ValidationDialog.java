@@ -58,8 +58,10 @@ public class ValidationDialog extends JDialog {
      */
     public ValidationDialog(Window parent, SpeciesManager speciesManager) {
         super(parent, "Data Validation & Repair", ModalityType.APPLICATION_MODAL);
+        simplegenomehub.runtime.HubSession.attach(this, simplegenomehub.runtime.HubSession.forComponent(parent));
         
         this.speciesManager = speciesManager;
+        simplegenomehub.runtime.HubSession.attach(this, speciesManager.getSession());
         this.selectedSpecies = new ArrayList<>();
         this.validationResults = new ArrayList<>();
         this.repairResults = new ArrayList<>();
@@ -362,7 +364,7 @@ public class ValidationDialog extends JDialog {
             }
         });
         
-        worker.execute();
+        simplegenomehub.runtime.HubSession.execute(this, worker);
     }
     
     /**
@@ -474,7 +476,7 @@ public class ValidationDialog extends JDialog {
             }
         });
         
-        worker.execute();
+        simplegenomehub.runtime.HubSession.execute(this, worker);
     }
     
     /**

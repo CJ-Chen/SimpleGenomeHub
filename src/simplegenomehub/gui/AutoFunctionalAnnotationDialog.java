@@ -23,6 +23,7 @@ import java.util.Map;
 public class AutoFunctionalAnnotationDialog extends JDialog {
 
     private final SpeciesInfo species;
+    private final simplegenomehub.runtime.HubSession owningSession;
 
     private JComboBox<String> taxScopeCombo;
     private JSpinner cpuSpinner;
@@ -37,10 +38,16 @@ public class AutoFunctionalAnnotationDialog extends JDialog {
     private JProgressBar progressBar;
     private JButton runButton;
     private JButton cancelButton;
+    private volatile Thread runningThread;
+    private volatile boolean cancelRequested;
+    private boolean running;
+    private boolean closeAfterRun;
 
     public AutoFunctionalAnnotationDialog(Window parent, SpeciesInfo species) {
         super(parent, "Auto Func. Annotations - " + species.getSpeciesName(), ModalityType.MODELESS);
         this.species = species;
+        this.owningSession = simplegenomehub.runtime.HubSession.forDataPath(species.getSpeciesDir());
+        simplegenomehub.runtime.HubSession.attach(this, owningSession);
         initializeComponents();
         setupLayout();
         setupEvents();
@@ -48,6 +55,10 @@ public class AutoFunctionalAnnotationDialog extends JDialog {
         setSize(820, 520);
         setMinimumSize(new Dimension(780, 480));
         setLocationRelativeTo(parent);
+        setDefaultCloseOperation(DO_NOTHING_ON_CLOSE);
+        addWindowListener(new WindowAdapter() {
+            @Override public void windowClosing(WindowEvent event) { requestCancelOrClose(); }
+        });
     }
 
     private void initializeComponents() {
@@ -178,7 +189,7 @@ public class AutoFunctionalAnnotationDialog extends JDialog {
     }
 
     private void setupEvents() {
-        cancelButton.addActionListener(e -> dispose());
+        cancelButton.addActionListener(e -> requestCancelOrClose());
         browseCustomKeggButton.addActionListener(e -> browseCustomKeggBackend());
         keggModeCombo.addActionListener(e -> updateKeggControls());
         runButton.addActionListener(e -> startRun());
@@ -205,6 +216,9 @@ public class AutoFunctionalAnnotationDialog extends JDialog {
 
     private void startRun() {
         runButton.setEnabled(false);
+        running = true;
+        cancelRequested = false;
+        cancelButton.setText("Cancel task");
         progressBar.setVisible(true);
         progressBar.setIndeterminate(true);
         appendStatus("Starting auto annotation...");
@@ -213,6 +227,7 @@ public class AutoFunctionalAnnotationDialog extends JDialog {
         try {
             parameters = buildParameters();
         } catch (Exception ex) {
+            running = false;
             runButton.setEnabled(true);
             progressBar.setVisible(false);
             JOptionPane.showMessageDialog(this, ex.getMessage(), "Invalid configuration", JOptionPane.ERROR_MESSAGE);
@@ -220,21 +235,24 @@ public class AutoFunctionalAnnotationDialog extends JDialog {
         }
 
         persistSelections(parameters);
+        final long generation = owningSession == null ? 0 : owningSession.getGeneration();
 
         SwingWorker<AutoFunctionalAnnotationService.Result, String> worker =
             new SwingWorker<AutoFunctionalAnnotationService.Result, String>() {
                 @Override
                 protected AutoFunctionalAnnotationService.Result doInBackground() throws Exception {
-                    return AutoFunctionalAnnotationService.run(
-                        AutoFunctionalAnnotationDialog.this,
-                        species,
-                        parameters,
-                        message -> publish(message)
-                    );
+                    runningThread = Thread.currentThread();
+                    try {
+                        if (cancelRequested) throw new InterruptedException("Auto annotation cancelled before starting");
+                        return AutoFunctionalAnnotationService.run(
+                            AutoFunctionalAnnotationDialog.this, species, parameters, message -> publish(message));
+                    } finally { runningThread = null; }
+
                 }
 
                 @Override
                 protected void process(java.util.List<String> chunks) {
+                    if (owningSession != null && !owningSession.accepts(generation)) return;
                     for (String chunk : chunks) {
                         appendStatus(chunk);
                         progressBar.setString(chunk);
@@ -243,8 +261,12 @@ public class AutoFunctionalAnnotationDialog extends JDialog {
 
                 @Override
                 protected void done() {
+                    running = false;
+                    cancelButton.setText("Close");
                     progressBar.setVisible(false);
                     progressBar.setIndeterminate(false);
+                    if (closeAfterRun) { dispose(); return; }
+                    if (owningSession != null && !owningSession.accepts(generation)) return;
                     runButton.setEnabled(true);
                     try {
                         AutoFunctionalAnnotationService.Result result = get();
@@ -270,7 +292,17 @@ public class AutoFunctionalAnnotationDialog extends JDialog {
                     }
                 }
             };
-        worker.execute();
+        simplegenomehub.runtime.HubSession.execute(this, worker);
+    }
+
+    private void requestCancelOrClose() {
+        if (!running) { dispose(); return; }
+        closeAfterRun = true;
+        cancelRequested = true;
+        cancelButton.setEnabled(false);
+        appendStatus("Cancellation requested. Waiting for the running operation to stop safely...");
+        Thread executing = runningThread;
+        if (executing != null) executing.interrupt();
     }
 
     private AutoFunctionalAnnotationService.Parameters buildParameters() {

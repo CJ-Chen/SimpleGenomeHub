@@ -738,7 +738,7 @@ public class FunctionalEnrichmentPanel extends JDialog {
         runAnalysisButton.setEnabled(false);
         statusLabel.setText("Analyzing " + currentGeneList.size() + " genes...");
         
-        worker.execute();
+        simplegenomehub.runtime.HubSession.execute(this, worker);
     }
     
     /**

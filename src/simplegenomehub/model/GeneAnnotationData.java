@@ -394,7 +394,7 @@ public class GeneAnnotationData {
             String[] fileHeaders = null;
             boolean firstLine = true;
             
-            while ((line = bio.readLine()) != null) {
+            while ((line = bio.br.readLine()) != null) {
                 if (line.trim().isEmpty()) continue;
                 
                 String[] parts = line.split("\t");
@@ -405,7 +405,7 @@ public class GeneAnnotationData {
                         fileHeaders = line.substring(1).split("\t"); // Remove # prefix
                     } else {
                         // Check if first line looks like headers
-                        if (parts.length > 1 && parts[0].toLowerCase().contains("gene")) {
+                        if (parts.length > 1 && parts[0].trim().toLowerCase(java.util.Locale.ROOT).matches("gene([ _]?id)?")) {
                             fileHeaders = parts;
                         } else {
                             // Treat as data line

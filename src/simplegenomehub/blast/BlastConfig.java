@@ -60,8 +60,8 @@ public class BlastConfig {
      */
     private void loadConfiguration() throws IOException {
         if (configFile.exists()) {
-            try (InputStream is = new FileInputStream(configFile)) {
-                configProperties.load(is);
+            try (java.io.Reader reader = java.nio.file.Files.newBufferedReader(configFile.toPath(), java.nio.charset.StandardCharsets.UTF_8)) {
+                configProperties.load(reader);
                 logger.info("Loaded BLAST config file: " + configFile.getAbsolutePath());
             } catch (IOException e) {
                 logger.warning("Unable to load BLAST config file, using defaults: " + e.getMessage());
@@ -85,11 +85,6 @@ public class BlastConfig {
         
         // BLAST executable path (auto-detect or use system PATH)
         this.blastExecutablePath = normalizePath(configProperties.getProperty("blast.executable.path", ""));
-        
-        if (!this.blastExecutablePath.isEmpty() && !isUsableBlastDir(new File(this.blastExecutablePath))) {
-            logger.warning("Configured BLAST path is not usable and will be ignored: " + this.blastExecutablePath);
-            this.blastExecutablePath = "";
-        }
         
         // Auto-detect bundled or system BLAST path if not configured
         if (this.blastExecutablePath.isEmpty()) {
@@ -126,67 +121,35 @@ public class BlastConfig {
         configProperties.setProperty("cache.unused.databases", String.valueOf(cacheUnusedDatabases));
         configProperties.setProperty("max.cache.age.days", String.valueOf(maxCacheAgeDays));
         
-        try (OutputStream os = new FileOutputStream(configFile)) {
-            configProperties.store(os, "SimpleGenomeHub BLAST Configuration");
-            logger.info("BLAST configuration saved to: " + configFile.getAbsolutePath());
+        java.util.Map<String, String> changes = new java.util.LinkedHashMap<>();
+        for (String key : new String[]{"global.blast.db.root", "blast.executable.path", "default.num.threads",
+            "default.evalue", "default.max.target.seqs", "auto.create.database", "cache.unused.databases", "max.cache.age.days"}) {
+            changes.put(key, configProperties.getProperty(key));
         }
+        Properties merged = simplegenomehub.util.fileio.AtomicFiles.updateProperties(configFile.toPath(), changes,
+            "SimpleGenomeHub BLAST Configuration");
+        configProperties.clear();
+        configProperties.putAll(merged);
     }
     
     /**
      * Auto-detect BLAST executable path from common locations
      */
     private String autoDetectBlastPath() {
-        String bundledBlastDir = null;
-        File bundledDir = ApplicationLayout.findBundledBlastDir();
-        if (bundledDir != null) {
-            bundledBlastDir = bundledDir.getAbsolutePath();
-        }
-        
-        String tbtoolsHome = System.getenv("TBTOOLS_HOME");
-        String[] candidatePaths = {
-            bundledBlastDir,
-            tbtoolsHome != null && !tbtoolsHome.trim().isEmpty() ? tbtoolsHome + "\\bin" : null,
-            "C:\\Program Files\\TBtools\\bin",
-            "C:\\TBtools\\bin",
-            "" // Empty string means use system PATH
-        };
-        
-        for (String candidatePath : candidatePaths) {
-            if (candidatePath == null) continue;
-            
-            if (candidatePath.isEmpty()) {
-                // Test if blastp is available in system PATH
-                if (isBlastAvailable("blastp")) {
-                    logger.info("Found BLAST in system PATH");
-                    return "";
-                }
-            } else {
-                File blastDir = new File(candidatePath);
-                if (isUsableBlastDir(blastDir)) {
-                    logger.info("Found BLAST at: " + candidatePath);
-                    return blastDir.getAbsolutePath();
-                }
-            }
-        }
-        
-        logger.warning("Could not auto-detect BLAST path. Configure it manually, place BLAST+ under "
-            + new File(ApplicationLayout.getAppHomeDirectory(), "bin\\tools").getAbsolutePath()
-            + ", or add it to system PATH.");
-        return "";
+        String resolved = simplegenomehub.runtime.HubToolResolver.resolve("blastp", null);
+        File executable = new File(resolved);
+        return executable.isAbsolute() && executable.isFile() ? executable.getParent() : "";
     }
-    
-    /**
-     * Test if BLAST is available in system PATH
-     */
+
     private boolean isBlastAvailable(String command) {
         try {
-            ProcessBuilder pb = new ProcessBuilder(command, "-version");
-            Process process = pb.start();
-            int exitCode = process.waitFor();
-            return exitCode == 0;
-        } catch (Exception e) {
+            return simplegenomehub.runtime.HubProcessRunner.run(
+                new ProcessBuilder(resolveBlastCommand(command), "-version"),
+                15, java.util.concurrent.TimeUnit.SECONDS).exitCode == 0;
+        } catch (InterruptedException ex) {
+            Thread.currentThread().interrupt();
             return false;
-        }
+        } catch (IOException ex) { return false; }
     }
 
     private boolean isUsableBlastDir(File blastDir) {
@@ -268,9 +231,7 @@ public class BlastConfig {
     }
 
     public String resolveBlastCommand(String commandBaseName) {
-        File blastDir = blastExecutablePath.isEmpty() ? null : new File(blastExecutablePath);
-        File executable = ApplicationLayout.resolveExecutable(blastDir, commandBaseName);
-        return executable != null ? executable.getAbsolutePath() : commandBaseName;
+        return simplegenomehub.runtime.HubToolResolver.resolve(commandBaseName, blastExecutablePath);
     }
     
     public int getDefaultNumThreads() {

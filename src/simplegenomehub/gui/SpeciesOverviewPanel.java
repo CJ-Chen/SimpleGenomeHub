@@ -1268,7 +1268,7 @@ final class SpeciesOverviewPanel extends JPanel {
                 }
             }
         };
-        worker.execute();
+        simplegenomehub.runtime.HubSession.execute(this, worker);
     }
 
     private String formatChromosomeStatistics(GenomeData genomeData) {

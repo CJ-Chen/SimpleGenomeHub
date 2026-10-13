@@ -232,10 +232,12 @@ public final class AutoFunctionalAnnotationService {
 
     private static void runEggnogPipeline(File outputDir, File proteinFile, File eggnogDbDir,
                                           Parameters parameters) throws Exception {
-        ensureDiamondAvailable();
+        String diamondExecutable = simplegenomehub.runtime.HubToolResolver.resolve("diamond", null);
+        ensureDiamondAvailable(diamondExecutable);
         String dmndPath = new File(eggnogDbDir, EggnogDbConstants.getDiamondDbFileName(parameters.getTaxScope())).getAbsolutePath();
         String[] args = new String[]{
             "-m", "diamond",
+            "--diamond_bin", diamondExecutable,
             "-i", proteinFile.getAbsolutePath(),
             "-o", parameters.getOutputPrefix(),
             "--output_dir", outputDir.getAbsolutePath(),
@@ -245,19 +247,24 @@ public final class AutoFunctionalAnnotationService {
             "--evalue", parameters.getEvalue(),
             "--override"
         };
-        CliArgs cliArgs = CliParser.parse(args);
-        EmapperPipeline pipeline = new EmapperPipeline(cliArgs);
-        pipeline.run();
+        List<String> command = new ArrayList<>();
+        File javaExecutable = new File(new File(System.getProperty("java.home"), "bin"),
+            ApplicationLayout.isWindows() ? "java.exe" : "java");
+        command.add(javaExecutable.getAbsolutePath());
+        command.add("-Duser.home=" + System.getProperty("user.home"));
+        command.add("-cp");
+        command.add(System.getProperty("java.class.path"));
+        command.add(simplegenomehub.runtime.HubEggnogMain.class.getName());
+        java.util.Collections.addAll(command, args);
+        biocjava.bioDoer.BLAST.ToolProcessRunner.Result completed = simplegenomehub.runtime.HubProcessRunner.run(
+            new ProcessBuilder(command), 7, TimeUnit.DAYS);
+        if (completed.exitCode != 0) throw new IOException("eggNOG-mapper failed: " + completed.output);
     }
 
-    private static void ensureDiamondAvailable() throws Exception {
-        Process process = new ProcessBuilder("diamond", "version").redirectErrorStream(true).start();
-        boolean done = process.waitFor(45, TimeUnit.SECONDS);
-        if (!done || process.exitValue() != 0) {
-            throw new IOException("Cannot run diamond. Place diamond under "
-                + new File(ApplicationLayout.getAppHomeDirectory(), "bin\\tools").getAbsolutePath()
-                + " or ensure it is available on PATH.");
-        }
+    private static void ensureDiamondAvailable(String executable) throws Exception {
+        biocjava.bioDoer.BLAST.ToolProcessRunner.Result completed = simplegenomehub.runtime.HubProcessRunner.run(
+            new ProcessBuilder(executable, "version"), 45, TimeUnit.SECONDS);
+        if (completed.exitCode != 0) throw new IOException("Cannot run DIAMOND at " + executable + ": " + completed.output);
     }
 
     private static void runEggnogHelper(File annotationsFile, File outputDir) throws Exception {
@@ -538,6 +545,9 @@ public final class AutoFunctionalAnnotationService {
     }
 
     private static void report(ProgressListener progressListener, String message) {
+        if (Thread.currentThread().isInterrupted()) throw new java.util.concurrent.CancellationException("Auto annotation cancelled");
+        simplegenomehub.runtime.HubSession session = simplegenomehub.runtime.HubSession.current();
+        if (session != null && !session.isActive()) throw new java.util.concurrent.CancellationException("Hub is closing");
         if (progressListener != null) {
             progressListener.onProgress(message);
         }

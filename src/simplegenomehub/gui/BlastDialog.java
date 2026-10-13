@@ -24,6 +24,7 @@ public class BlastDialog extends JDialog {
     private static final Logger logger = Logger.getLogger(BlastDialog.class.getName());
     
     private BlastPanel blastPanel;
+    private boolean closing;
     private SpeciesManager speciesManager;
     private SpeciesInfo targetSpecies;
     private SequenceType initialSequenceType;
@@ -46,6 +47,7 @@ public class BlastDialog extends JDialog {
         
         this.targetSpecies = targetSpecies;
         this.speciesManager = mainSpeciesManager; // Use the main species manager directly
+        simplegenomehub.runtime.HubSession.attach(this, mainSpeciesManager.getSession());
         this.initialSequenceType = initialSequenceType;
         this.initialQuerySequence = initialQuerySequence;
         
@@ -183,13 +185,17 @@ public class BlastDialog extends JDialog {
      * Close dialog with cleanup
      */
     private void closeDialog() {
-        // Cleanup BLAST panel resources
-        if (blastPanel != null) {
-            blastPanel.cleanup();
-        }
-        
-        // Close dialog
-        dispose();
+        if (closing) return;
+        closing = true;
+        setTitle(getTitle() + " (closing...)");
+        if (blastPanel == null) { dispose(); return; }
+        blastPanel.cleanupAsync().whenComplete((ignored, failure) -> SwingUtilities.invokeLater(() -> {
+            if (failure == null) dispose();
+            else {
+                closing = false;
+                JOptionPane.showMessageDialog(this, failure.getMessage(), "BLAST close failed", JOptionPane.ERROR_MESSAGE);
+            }
+        }));
     }
     
     /**

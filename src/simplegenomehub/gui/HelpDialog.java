@@ -24,6 +24,7 @@ public class HelpDialog extends JDialog {
      */
     public HelpDialog(Window parent) {
         super(parent, "SimpleGenomeHub Help", ModalityType.APPLICATION_MODAL);
+        simplegenomehub.runtime.HubSession.attach(this, simplegenomehub.runtime.HubSession.forComponent(parent));
         
         initializeComponents();
         setupLayout();

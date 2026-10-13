@@ -131,7 +131,7 @@ final class GeneSetBlastLauncher {
             }
         };
 
-        worker.execute();
+        simplegenomehub.runtime.HubSession.execute(parentComponent, worker);
         progressDialog.setVisible(true);
     }
 

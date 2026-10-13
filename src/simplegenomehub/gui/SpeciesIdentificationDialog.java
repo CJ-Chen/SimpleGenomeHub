@@ -48,7 +48,9 @@ public class SpeciesIdentificationDialog extends JDialog {
     
     public SpeciesIdentificationDialog(Frame parent, simplegenomehub.model.SpeciesManager speciesManager) {
         super(parent, "Species Identification from Sequence IDs", false);
+        simplegenomehub.runtime.HubSession.attach(this, simplegenomehub.runtime.HubSession.forComponent(parent));
         this.speciesManager = speciesManager;
+        simplegenomehub.runtime.HubSession.attach(this, speciesManager.getSession());
         this.engine = new SpeciesIdentificationEngine(speciesManager);
         this.currentResults = new ArrayList<>();
         
@@ -532,7 +534,7 @@ public class SpeciesIdentificationDialog extends JDialog {
             }
         };
         
-        worker.execute();
+        simplegenomehub.runtime.HubSession.execute(this, worker);
     }
     
     private List<String> parseSequenceIds(String inputText) {
@@ -682,7 +684,11 @@ public class SpeciesIdentificationDialog extends JDialog {
     @Override
     public void dispose() {
         if (engine != null) {
-            engine.shutdown();
+            simplegenomehub.util.identification.SpeciesIdentificationEngine closingEngine = engine;
+            engine = null;
+            Thread closer = new Thread(closingEngine::shutdown, "SGH-identification-close");
+            closer.setDaemon(true);
+            closer.start();
         }
         super.dispose();
     }

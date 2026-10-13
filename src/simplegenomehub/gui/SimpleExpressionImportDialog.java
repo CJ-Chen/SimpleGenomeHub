@@ -61,7 +61,9 @@ public class SimpleExpressionImportDialog extends JDialog {
      */
     public SimpleExpressionImportDialog(Window parent, SpeciesInfo species) {
         super(parent, "Import Expression Data", ModalityType.MODELESS);
+        simplegenomehub.runtime.HubSession.attach(this, simplegenomehub.runtime.HubSession.forComponent(parent));
         this.targetSpecies = species;
+        simplegenomehub.runtime.HubSession.attach(this, simplegenomehub.runtime.HubSession.forDataPath(species.getSpeciesDir()));
         
         initializeComponents();
         setupLayout();
@@ -556,7 +558,7 @@ public class SimpleExpressionImportDialog extends JDialog {
             }
         };
         
-        importWorker.execute();
+        simplegenomehub.runtime.HubSession.execute(this, importWorker);
     }
     
     /**

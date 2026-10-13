@@ -40,7 +40,9 @@ public class AnnotationTypeSelectionDialog extends JDialog {
      */
     public AnnotationTypeSelectionDialog(Window parent, SpeciesInfo species) {
         super(parent, "Select Annotation Type - " + species.getSpeciesName(), ModalityType.MODELESS);
+        simplegenomehub.runtime.HubSession.attach(this, simplegenomehub.runtime.HubSession.forComponent(parent));
         this.targetSpecies = species;
+        simplegenomehub.runtime.HubSession.attach(this, simplegenomehub.runtime.HubSession.forDataPath(species.getSpeciesDir()));
         this.annotationData = species.getFunctionalAnnotations();
         
         // If no annotation data is loaded, try to load metadata first

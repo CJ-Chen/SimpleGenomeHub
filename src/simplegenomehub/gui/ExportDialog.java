@@ -63,8 +63,11 @@ public class ExportDialog extends JDialog {
      */
     public ExportDialog(Window parent, List<SpeciesInfo> species) {
         super(parent, "Export Species Data", ModalityType.APPLICATION_MODAL);
+        simplegenomehub.runtime.HubSession.attach(this, simplegenomehub.runtime.HubSession.forComponent(parent));
         
         this.selectedSpecies = new ArrayList<>(species);
+        if (!species.isEmpty()) simplegenomehub.runtime.HubSession.attach(this,
+            simplegenomehub.runtime.HubSession.forDataPath(species.get(0).getSpeciesDir()));
         
         initializeComponents();
         setupLayout();
@@ -445,7 +448,7 @@ public class ExportDialog extends JDialog {
             }
         });
         
-        worker.execute();
+        simplegenomehub.runtime.HubSession.execute(this, worker);
     }
     
     /**

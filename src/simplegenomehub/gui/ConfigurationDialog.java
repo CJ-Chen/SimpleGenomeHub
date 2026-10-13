@@ -43,7 +43,7 @@ public class ConfigurationDialog extends JDialog {
         
         this.config = config;
         this.speciesManager = speciesManager;
-        this.originalDataDir = config.getDataRootDir();
+        this.originalDataDir = speciesManager.getDataRootDirectory();
         
         initializeComponents();
         setupLayout();
@@ -248,7 +248,7 @@ public class ConfigurationDialog extends JDialog {
      * Load current settings into the dialog
      */
     private void loadCurrentSettings() {
-        File currentDataDir = config.getDataRootDir();
+        File currentDataDir = speciesManager.getDataRootDirectory();
         if (currentDataDir != null) {
             dataDirectoryField.setText(currentDataDir.getAbsolutePath());
         } else {
@@ -445,7 +445,7 @@ public class ConfigurationDialog extends JDialog {
         info.append("========================\n\n");
         
         // Data directory info
-        File dataDir = config.getDataRootDir();
+        File dataDir = speciesManager.getDataRootDirectory();
         if (dataDir != null) {
             info.append("Data Directory: ").append(dataDir.getAbsolutePath()).append("\n");
             info.append("Directory Exists: ").append(dataDir.exists() ? "Yes" : "No").append("\n");

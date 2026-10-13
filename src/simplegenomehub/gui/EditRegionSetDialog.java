@@ -25,7 +25,9 @@ final class EditRegionSetDialog extends JDialog {
 
     EditRegionSetDialog(Window parent, SpeciesInfo species, File regionSetFile, Runnable onUpdateSuccess) {
         super(parent, "Edit Region Set", ModalityType.MODELESS);
+        simplegenomehub.runtime.HubSession.attach(this, simplegenomehub.runtime.HubSession.forComponent(parent));
         this.species = species;
+        simplegenomehub.runtime.HubSession.attach(this, simplegenomehub.runtime.HubSession.forDataPath(species.getSpeciesDir()));
         this.originalFile = regionSetFile;
         this.onUpdateSuccess = onUpdateSuccess;
         this.regionSetNameField = new JTextField();
@@ -258,7 +260,7 @@ final class EditRegionSetDialog extends JDialog {
             }
         };
 
-        worker.execute();
+        simplegenomehub.runtime.HubSession.execute(this, worker);
     }
 
     private void setControlsEnabled(boolean enabled) {

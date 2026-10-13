@@ -72,8 +72,10 @@ public class BatchImportDialog extends JDialog {
      */
     public BatchImportDialog(Window parent, SpeciesManager speciesManager) {
         super(parent, "Batch Import Species", ModalityType.APPLICATION_MODAL);
+        simplegenomehub.runtime.HubSession.attach(this, simplegenomehub.runtime.HubSession.forComponent(parent));
         
         this.speciesManager = speciesManager;
+        simplegenomehub.runtime.HubSession.attach(this, speciesManager.getSession());
         this.importEntries = new ArrayList<>();
         this.tableModel = new ImportTableModel();
         
@@ -400,7 +402,7 @@ public class BatchImportDialog extends JDialog {
             }
         };
         
-        worker.execute();
+        simplegenomehub.runtime.HubSession.execute(this, worker);
     }
     
     /**
@@ -528,7 +530,7 @@ public class BatchImportDialog extends JDialog {
             }
         });
         
-        worker.execute();
+        simplegenomehub.runtime.HubSession.execute(this, worker);
     }
     
     /**

@@ -1,6 +1,5 @@
 package simplegenomehub.util.fileio;
 
-import simplegenomehub.config.SimpleGenomeHubConfig;
 import simplegenomehub.model.SpeciesInfo;
 
 import java.io.BufferedReader;
@@ -51,7 +50,7 @@ public final class GenomeCompareExistingResultScanner {
         }
 
         LinkedHashMap<String, ReusableResult> matchesByPath = new LinkedHashMap<>();
-        for (File candidateDir : collectMetadataDirectories(resolveSearchRoot())) {
+        for (File candidateDir : collectMetadataDirectories(resolveSearchRoot(genome1Species, genome2Species))) {
             ReusableResult result = readReusableResult(candidateDir);
             if (result == null || !result.isSuccessful()) {
                 continue;
@@ -71,9 +70,13 @@ public final class GenomeCompareExistingResultScanner {
         return sortedMatches;
     }
 
-    private static File resolveSearchRoot() {
-        File dataRootDir = SimpleGenomeHubConfig.getInstance().getDataRootDir();
-        return dataRootDir != null && dataRootDir.isDirectory() ? dataRootDir : null;
+    private static File resolveSearchRoot(SpeciesInfo first, SpeciesInfo second) {
+        if (first.getSpeciesDir() == null || second.getSpeciesDir() == null) return null;
+        try {
+            File firstRoot = first.getSpeciesDir().getParentFile().getCanonicalFile();
+            File secondRoot = second.getSpeciesDir().getParentFile().getCanonicalFile();
+            return firstRoot.equals(secondRoot) && firstRoot.isDirectory() ? firstRoot : null;
+        } catch (IOException e) { return null; }
     }
 
     private static List<File> collectMetadataDirectories(File searchRoot) {

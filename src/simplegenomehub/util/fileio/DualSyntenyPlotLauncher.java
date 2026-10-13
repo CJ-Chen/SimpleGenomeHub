@@ -129,18 +129,24 @@ public final class DualSyntenyPlotLauncher {
 
     private static void launchPlotter(VisualizationInputs inputs, File highlightFile) throws Exception {
         DualSyntenyPlotter plotter = createConfiguredPlotter(inputs, highlightFile);
-        List<java.awt.Window> previousWindows = DualSyntenyPreviewExporter.captureWindows();
+        simplegenomehub.runtime.HubSession session = simplegenomehub.runtime.HubSession.current();
         try {
             plotter.plot();
+            if (session != null && plotter.getResultGui() != null) {
+                plotter.getResultGui().setOwnedDialogRegistrar(window ->
+                    simplegenomehub.gui.SimpleGenomeHubFontManager.registerOwnedWindowTree(window, session));
+                simplegenomehub.gui.SimpleGenomeHubFontManager.registerOwnedWindowTree(plotter.getResultGui().getF(), session);
+            }
+            simplegenomehub.runtime.HubSession.Task previewTask = session == null ? null : session.beginTask("Dual Synteny preview", null);
             Thread previewExportThread = new Thread(() -> {
                 try {
-                    DualSyntenyPreviewExporter.exportPreview(inputs.outputDir, previousWindows);
+                    DualSyntenyPreviewExporter.exportPreview(inputs.outputDir, plotter);
                 } catch (IOException previewEx) {
                     logger.log(Level.WARNING,
                         "Failed to export Dual Synteny preview image for " + inputs.outputDir.getAbsolutePath(),
                         previewEx
                     );
-                }
+                } finally { if (previewTask != null) previewTask.close(); }
             }, "dual-synteny-preview-export");
             previewExportThread.setDaemon(true);
             previewExportThread.start();

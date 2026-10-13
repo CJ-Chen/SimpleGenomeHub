@@ -17,8 +17,13 @@ import java.awt.Toolkit;
 import java.awt.Window;
 import java.awt.event.AWTEventListener;
 import java.awt.event.WindowEvent;
+import java.awt.event.ContainerEvent;
 import java.beans.PropertyChangeListener;
 import java.beans.PropertyChangeSupport;
+import java.util.Map;
+import java.util.WeakHashMap;
+import java.util.ArrayList;
+import simplegenomehub.runtime.HubSession;
 
 /**
  * Applies a user-controlled font scale across existing and newly opened Swing windows.
@@ -48,6 +53,8 @@ public final class SimpleGenomeHubFontManager {
     private static volatile int pendingScalePercent = DEFAULT_SCALE_PERCENT;
     private static volatile boolean pendingDragApply;
     private static Timer dragApplyTimer;
+    private static final Map<Component, HubSession> ROOTS = new WeakHashMap<>();
+    private static AWTEventListener windowListener;
 
     private SimpleGenomeHubFontManager() {
     }
@@ -66,12 +73,45 @@ public final class SimpleGenomeHubFontManager {
                 SimpleGenomeHubConfig.getInstance().getUiFontScalePercent()
             );
             SimpleGenomeHubStyle.setUserFontScalePercent(currentScalePercent);
-            SimpleGenomeHubStyle.installGlobalFontDefaults();
-            installWindowOpenListener();
             installed = true;
         }
 
-        applyScaleToOpenWindows(currentScalePercent);
+    }
+
+    /** Register only this Hub's component tree, never the enclosing TBtools frame. */
+    public static void registerRoot(Component root, HubSession session) {
+        install();
+        ROOTS.put(root, session);
+        HubSession.attach(root, session);
+        installWindowOpenListener();
+        applyScaleToComponentTree(root, currentScalePercent);
+    }
+
+    public static void unregisterRoot(Component root) {
+        HubSession session = ROOTS.remove(root);
+        if (session != null) ROOTS.entrySet().removeIf(entry -> entry.getValue() == session);
+        if (ROOTS.isEmpty()) {
+            stopDragPreview();
+            if (windowListener != null) {
+                Toolkit.getDefaultToolkit().removeAWTEventListener(windowListener);
+                windowListener = null;
+            }
+        }
+    }
+
+    /** Includes host drawing controllers whose classes are ordinary Swing dialogs. */
+    public static void registerOwnedWindowTree(Window window, HubSession session) {
+        if (window == null || session == null) return;
+        Runnable register = () -> registerOwnedWindowsOnEdt(window, session);
+        if (SwingUtilities.isEventDispatchThread()) register.run();
+        else try { SwingUtilities.invokeAndWait(register); }
+        catch (Exception failure) { throw new IllegalStateException("Cannot register Hub drawing windows", failure); }
+    }
+
+    private static void registerOwnedWindowsOnEdt(Window window, HubSession session) {
+        registerRoot(window, session);
+        session.guardActionsIn(window);
+        for (Window child : window.getOwnedWindows()) registerOwnedWindowsOnEdt(child, session);
     }
 
     public static int getScalePercent() {
@@ -174,7 +214,19 @@ public final class SimpleGenomeHubFontManager {
     }
 
     private static void installWindowOpenListener() {
-        AWTEventListener listener = event -> {
+        if (windowListener != null) return;
+        windowListener = event -> {
+            if (event instanceof ContainerEvent && event.getID() == ContainerEvent.COMPONENT_ADDED) {
+                Component child = ((ContainerEvent) event).getChild();
+                if (belongsToRegisteredRoot(child)) {
+                    SwingUtilities.invokeLater(() -> {
+                        HubSession owner = HubSession.getExplicitOwner(child);
+                        if (owner != null) owner.guardActionsIn(child);
+                        applyScaleToComponentTree(child, currentScalePercent);
+                    });
+                }
+                return;
+            }
             if (!(event instanceof WindowEvent)) {
                 return;
             }
@@ -183,13 +235,33 @@ public final class SimpleGenomeHubFontManager {
             }
 
             Window window = ((WindowEvent) event).getWindow();
-            if (window == null) {
+            // Ordinary TBtools dialogs share the same frame owner. Ownership of
+            // a frame alone therefore cannot identify an SGH dialog.
+            HubSession explicitOwner = HubSession.getExplicitOwner(window);
+            if (window == null || (explicitOwner == null
+                && !window.getClass().getName().startsWith("simplegenomehub."))) {
                 return;
             }
-
-            SwingUtilities.invokeLater(() -> applyScaleToWindow(window, currentScalePercent));
+            HubSession session = explicitOwner == null ? HubSession.forComponent(window) : explicitOwner;
+            if (session == null) return;
+            HubSession.attach(window, session);
+            if (!session.isActive()) { window.dispose(); return; }
+            ROOTS.put(window, session);
+            SwingUtilities.invokeLater(() -> {
+                if (!session.isActive()) return;
+                if (window instanceof JDialog) SimpleGenomeHubUi.applyDialogStyle((JDialog) window);
+                applyScaleToWindow(window, currentScalePercent);
+            });
         };
-        Toolkit.getDefaultToolkit().addAWTEventListener(listener, AWTEvent.WINDOW_EVENT_MASK);
+        Toolkit.getDefaultToolkit().addAWTEventListener(windowListener,
+            AWTEvent.WINDOW_EVENT_MASK | AWTEvent.CONTAINER_EVENT_MASK);
+    }
+
+    private static boolean belongsToRegisteredRoot(Component component) {
+        for (Component cursor = component; cursor != null; cursor = cursor.getParent())
+            if (ROOTS.containsKey(cursor)) return true;
+        HubSession owner = HubSession.getExplicitOwner(component);
+        return owner != null && ROOTS.containsValue(owner);
     }
 
     private static Timer ensureDragApplyTimer() {
@@ -229,7 +301,6 @@ public final class SimpleGenomeHubFontManager {
 
         currentScalePercent = clampedScalePercent;
         SimpleGenomeHubStyle.setUserFontScalePercent(clampedScalePercent);
-        SimpleGenomeHubStyle.installGlobalFontDefaults();
         applyScaleToOpenWindows(previousScalePercent);
 
         if (persistToConfig) {
@@ -244,9 +315,13 @@ public final class SimpleGenomeHubFontManager {
     }
 
     private static void applyScaleToOpenWindows(int referenceScalePercent) {
-        for (Window window : Window.getWindows()) {
-            if (window != null && window.isDisplayable()) {
-                applyScaleToWindow(window, referenceScalePercent);
+        for (Component root : new ArrayList<>(ROOTS.keySet())) {
+            if (root instanceof Window) applyScaleToWindow((Window) root, referenceScalePercent);
+            else if (root != null) {
+                applyScaleToComponentTree(root, referenceScalePercent);
+                root.invalidate();
+                if (root instanceof JComponent) ((JComponent) root).revalidate();
+                root.repaint();
             }
         }
     }

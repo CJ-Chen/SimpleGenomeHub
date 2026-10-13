@@ -1,6 +1,8 @@
 package simplegenomehub.blast;
 
 import simplegenomehub.blast.model.*;
+import simplegenomehub.runtime.HubProcessRunner;
+import biocjava.bioDoer.BLAST.ToolProcessRunner;
 import simplegenomehub.model.SpeciesInfo;
 import java.io.*;
 import java.nio.file.Files;
@@ -20,13 +22,19 @@ public class ProcessBasedBlastExecutor {
     private static final Logger logger = Logger.getLogger(ProcessBasedBlastExecutor.class.getName());
     
     private final BlastConfig config;
+    private final simplegenomehub.runtime.HubSession session;
     private final BlastDatabaseManager dbManager;
     
     // Cache for sequence ID mappings: database path -> (ordinal -> original ID)
     private static final Map<String, Map<Integer, String>> sequenceIdMappings = new ConcurrentHashMap<>();
     
     public ProcessBasedBlastExecutor(BlastConfig config, BlastDatabaseManager dbManager) {
+        this(config, dbManager, simplegenomehub.runtime.HubSession.current());
+    }
+
+    public ProcessBasedBlastExecutor(BlastConfig config, BlastDatabaseManager dbManager, simplegenomehub.runtime.HubSession session) {
         this.config = config;
+        this.session = session;
         this.dbManager = dbManager;
     }
     
@@ -84,56 +92,8 @@ public class ProcessBasedBlastExecutor {
             dbDir.mkdirs();
         }
         
-        // Build makeblastdb command
-        String dbtype = targetDb.getMolecularType() == BlastConfig.MolecularType.PROTEIN ? "prot" : "nucl";
-        File outFile = new File(dbDir, targetDb.getDatabaseName());
-        
-        List<String> command = Arrays.asList(
-            makeblastdbCmd,
-            "-in", sourceFile.getAbsolutePath(),
-            "-dbtype", dbtype,
-            "-out", outFile.getAbsolutePath(),
-            "-title", targetDb.getDatabaseName(),
-            "-parse_seqids"
-        );
-        
-        logger.info("Database output path: " + outFile.getAbsolutePath());
-        logger.info("Database directory exists: " + dbDir.exists());
-        logger.info("Source file exists: " + sourceFile.exists());
-        
-        logger.info("makeblastdb command: " + String.join(" ", command));
-        
-        // Execute makeblastdb
-        ProcessBuilder pb = new ProcessBuilder(command);
-        setupProcessEnvironment(pb);
-        pb.directory(dbDir);
-        pb.redirectErrorStream(true);
-        
-        Process process = pb.start();
-        
-        // Capture output
-        StringBuilder output = new StringBuilder();
-        try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()))) {
-            String line;
-            while ((line = reader.readLine()) != null) {
-                output.append(line).append("\\n");
-                logger.info("makeblastdb: " + line);
-            }
-        }
-        
-        // Wait for completion
-        boolean finished = process.waitFor(5, TimeUnit.MINUTES);
-        if (!finished) {
-            process.destroyForcibly();
-            throw new Exception("makeblastdb execution timed out after 5 minutes");
-        }
-        
-        int exitCode = process.exitValue();
-        if (exitCode != 0) {
-            throw new Exception("makeblastdb failed with exit code " + exitCode + 
-                              ". Output: " + output.toString());
-        }
-        
+        BlastDatabaseManager.createIndex(config, session, sourceFile, dbDir, targetDb.getDatabaseName(), targetDb.getMolecularType());
+
         logger.info("BLAST database created successfully: " + targetDb.getDatabaseName());
     }
     
@@ -167,7 +127,8 @@ public class ProcessBasedBlastExecutor {
         
         // Add additional parameters for short sequences if needed
         if (params.isShortQuery()) {
-            command.addAll(Arrays.asList("-task", "blastp-short"));
+            if (blastType == BlastExecutor.BlastType.BLASTP) command.addAll(Arrays.asList("-task", "blastp-short"));
+            else if (blastType == BlastExecutor.BlastType.BLASTN) command.addAll(Arrays.asList("-task", "blastn-short"));
         }
         
         logger.info("BLAST command: " + String.join(" ", command));
@@ -180,31 +141,11 @@ public class ProcessBasedBlastExecutor {
         pb.directory(dbDir); // Set working directory to database directory
         pb.redirectErrorStream(true);
         
-        Process process = pb.start();
-        
-        // Capture output
-        StringBuilder output = new StringBuilder();
-        try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()))) {
-            String line;
-            while ((line = reader.readLine()) != null) {
-                output.append(line).append("\\n");
-                logger.fine("BLAST: " + line);
-            }
+        ToolProcessRunner.Result completed = HubProcessRunner.run(session, pb, 10, TimeUnit.MINUTES);
+        if (completed.exitCode != 0) {
+            throw new IOException("BLAST failed (exit=" + completed.exitCode + "): " + completed.output);
         }
-        
-        // Wait for completion
-        boolean finished = process.waitFor(10, TimeUnit.MINUTES);
-        if (!finished) {
-            process.destroyForcibly();
-            throw new Exception("BLAST execution timed out after 10 minutes");
-        }
-        
-        int exitCode = process.exitValue();
-        if (exitCode != 0) {
-            throw new Exception("BLAST failed with exit code " + exitCode + 
-                              ". Output: " + output.toString());
-        }
-        
+
         // Create result object
         BlastResult result = new BlastResult(query, blastType.getCommand());
         result.setResultFile(outputFile);
@@ -469,7 +410,8 @@ public class ProcessBasedBlastExecutor {
             int ordinal = Integer.parseInt(ordinalStr);
             
             // Get or build sequence ID mapping for this database
-            String dbKey = targetDb.getSourceFilePath();
+            File source = new File(targetDb.getSourceFilePath());
+            String dbKey = source.getCanonicalPath() + "|" + source.lastModified() + "|" + source.length();
             Map<Integer, String> idMapping = sequenceIdMappings.get(dbKey);
             
             if (idMapping == null) {

@@ -92,7 +92,9 @@ public class GOEnrichmentDialog extends JDialog {
      */
     public GOEnrichmentDialog(Window parent, SpeciesInfo species) {
         super(parent, "GO Enrichment Analysis - " + species.getSpeciesName(), ModalityType.MODELESS);
+        simplegenomehub.runtime.HubSession.attach(this, simplegenomehub.runtime.HubSession.forComponent(parent));
         this.targetSpecies = species;
+        simplegenomehub.runtime.HubSession.attach(this, simplegenomehub.runtime.HubSession.forDataPath(species.getSpeciesDir()));
         this.annotationData = species.getFunctionalAnnotations();
         this.currentGeneList = new ArrayList<>();
         this.currentResults = new ArrayList<>();
@@ -220,7 +222,7 @@ public class GOEnrichmentDialog extends JDialog {
         };
         
         // 启动后台任务
-        initWorker.execute();
+        simplegenomehub.runtime.HubSession.execute(this, initWorker);
         
         // 延迟一点再显示进度对话框，确保用户能看到它
         javax.swing.Timer showTimer = new javax.swing.Timer(200, e -> {
@@ -872,7 +874,7 @@ public class GOEnrichmentDialog extends JDialog {
                 }
             };
 
-        worker.execute();
+        simplegenomehub.runtime.HubSession.execute(this, worker);
     }
 
     private List<String> readGeneListFromFile(File file) throws IOException {
@@ -945,7 +947,7 @@ public class GOEnrichmentDialog extends JDialog {
         statusLabel.setText("Analyzing " + currentGeneList.size() + " genes...");
         statusLabel.setForeground(Color.BLUE);
         
-        worker.execute();
+        simplegenomehub.runtime.HubSession.execute(this, worker);
     }
     
     /**
@@ -1679,6 +1681,7 @@ public class GOEnrichmentDialog extends JDialog {
         
         public VisualizationConfigDialog(Window parent) {
             super(parent, "Visualization Parameters", ModalityType.APPLICATION_MODAL);
+        simplegenomehub.runtime.HubSession.attach(this, simplegenomehub.runtime.HubSession.forComponent(parent));
             initComponents();
             setupEventListeners();
             

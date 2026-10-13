@@ -234,6 +234,7 @@ public class SpeciesInfoPanel extends JPanel {
             if (genomeFile != null && genomeFile.exists()) {
                 FilePreviewDialog dialog = new FilePreviewDialog(
                     SwingUtilities.getWindowAncestor(this), genomeFile);
+                simplegenomehub.runtime.HubSession.attach(dialog, speciesManager.getSession());
                 dialog.setVisible(true);
             } else {
                 JOptionPane.showMessageDialog(this,
@@ -257,6 +258,7 @@ public class SpeciesInfoPanel extends JPanel {
             if (annotationFiles != null && annotationFiles.length > 0) {
                 FilePreviewDialog dialog = new FilePreviewDialog(
                     SwingUtilities.getWindowAncestor(this), annotationFiles[0]);
+                simplegenomehub.runtime.HubSession.attach(dialog, speciesManager.getSession());
                 dialog.setVisible(true);
             }
         }
@@ -284,6 +286,7 @@ public class SpeciesInfoPanel extends JPanel {
         if (currentSpecies != null) {
             SequenceExtractionDialog dialog = new SequenceExtractionDialog(
                 SwingUtilities.getWindowAncestor(this), currentSpecies);
+            simplegenomehub.runtime.HubSession.attach(dialog, speciesManager.getSession());
             dialog.setVisible(true);
         }
     }
@@ -295,6 +298,7 @@ public class SpeciesInfoPanel extends JPanel {
         if (currentSpecies != null) {
             SequenceLookupDialog dialog = new SequenceLookupDialog(
                 SwingUtilities.getWindowAncestor(this), currentSpecies);
+            simplegenomehub.runtime.HubSession.attach(dialog, speciesManager.getSession());
             dialog.setVisible(true);
         } else {
             JOptionPane.showMessageDialog(this,
@@ -357,6 +361,7 @@ public class SpeciesInfoPanel extends JPanel {
             try {
                 BlastDialog dialog = new BlastDialog(
                     SwingUtilities.getWindowAncestor(this), currentSpecies, speciesManager);
+                simplegenomehub.runtime.HubSession.attach(dialog, speciesManager.getSession());
                 dialog.setVisible(true);
             } catch (Exception e) {
                 JOptionPane.showMessageDialog(this,
@@ -387,6 +392,7 @@ public class SpeciesInfoPanel extends JPanel {
             try {
                 GenomeCompareDialog dialog = new GenomeCompareDialog(
                     SwingUtilities.getWindowAncestor(this), currentSpecies, speciesManager);
+                simplegenomehub.runtime.HubSession.attach(dialog, speciesManager.getSession());
                 dialog.setVisible(true);
             } catch (Exception e) {
                 JOptionPane.showMessageDialog(this,
@@ -407,6 +413,7 @@ public class SpeciesInfoPanel extends JPanel {
             try {
                 MultipleSyntenyDialog dialog = new MultipleSyntenyDialog(
                     SwingUtilities.getWindowAncestor(this), currentSpecies, speciesManager);
+                simplegenomehub.runtime.HubSession.attach(dialog, speciesManager.getSession());
                 dialog.setVisible(true);
             } catch (Exception e) {
                 JOptionPane.showMessageDialog(this,
@@ -521,6 +528,7 @@ public class SpeciesInfoPanel extends JPanel {
 
         SimpleExpressionImportDialog dialog = new SimpleExpressionImportDialog(
             SwingUtilities.getWindowAncestor(this), currentSpecies);
+        simplegenomehub.runtime.HubSession.attach(dialog, speciesManager.getSession());
         dialog.setVisible(true);
         
         if (dialog.isImportSuccessful()) {
@@ -546,6 +554,7 @@ public class SpeciesInfoPanel extends JPanel {
         if (currentSpecies.hasExpressionData()) {
             ExpressionDataPanel panel = new ExpressionDataPanel(
                 SwingUtilities.getWindowAncestor(this), currentSpecies);
+            simplegenomehub.runtime.HubSession.attach(panel, speciesManager.getSession());
             panel.setVisible(true);
             
             // Refresh buttons in case data was modified
@@ -567,6 +576,7 @@ public class SpeciesInfoPanel extends JPanel {
             try {
                 ChromosomeRegionExtractorDialog dialog = new ChromosomeRegionExtractorDialog(
                     (Frame) SwingUtilities.getWindowAncestor(this), currentSpecies);
+                simplegenomehub.runtime.HubSession.attach(dialog, speciesManager.getSession());
                 dialog.setVisible(true);
             } catch (Exception e) {
                 JOptionPane.showMessageDialog(this,
@@ -732,6 +742,7 @@ public class SpeciesInfoPanel extends JPanel {
         goEnrichmentItem.addActionListener(e -> {
             GOEnrichmentDialog dialog = new GOEnrichmentDialog(
                 (Frame) SwingUtilities.getWindowAncestor(this), currentSpecies);
+            simplegenomehub.runtime.HubSession.attach(dialog, speciesManager.getSession());
             dialog.setVisible(true);
         });
         menu.add(goEnrichmentItem);
@@ -742,6 +753,7 @@ public class SpeciesInfoPanel extends JPanel {
         keggEnrichmentItem.addActionListener(e -> {
             KEGGEnrichmentDialog dialog = new KEGGEnrichmentDialog(
                 (Frame) SwingUtilities.getWindowAncestor(this), currentSpecies);
+            simplegenomehub.runtime.HubSession.attach(dialog, speciesManager.getSession());
             dialog.setVisible(true);
         });
         menu.add(keggEnrichmentItem);
@@ -813,6 +825,7 @@ public class SpeciesInfoPanel extends JPanel {
                     speciesManager.updateSpecies(currentSpecies);
                 }
             });
+        simplegenomehub.runtime.HubSession.attach(dialog, speciesManager.getSession());
         dialog.setVisible(true);
     }
 
@@ -862,6 +875,7 @@ public class SpeciesInfoPanel extends JPanel {
                     speciesManager.updateSpecies(currentSpecies);
                 }
             });
+        simplegenomehub.runtime.HubSession.attach(dialog, speciesManager.getSession());
         dialog.setVisible(true);
     }
 
@@ -957,6 +971,7 @@ public class SpeciesInfoPanel extends JPanel {
                             currentSpecies,
                             speciesManager
                         );
+                    simplegenomehub.runtime.HubSession.attach(launchDialog, speciesManager.getSession());
                     launchDialog.setVisible(true);
                 } catch (Exception e) {
                     JOptionPane.showMessageDialog(SpeciesInfoPanel.this,
@@ -967,7 +982,8 @@ public class SpeciesInfoPanel extends JPanel {
             }
         };
 
-        worker.execute();
+        simplegenomehub.runtime.HubSession.execute(this, worker);
+        simplegenomehub.runtime.HubSession.attach(progressDialog, speciesManager.getSession());
         progressDialog.setVisible(true);
     }
 
@@ -988,7 +1004,7 @@ public class SpeciesInfoPanel extends JPanel {
 
         File statsFile = currentSpecies.getStatsFile();
         if (statsFile != null) {
-            genomeData.saveToFile(statsFile);
+            if (!genomeData.saveToFile(statsFile)) throw new IOException("Failed to save genome statistics: " + statsFile);
         }
         if (speciesManager != null) {
             speciesManager.updateSpecies(currentSpecies);
@@ -1042,6 +1058,7 @@ public class SpeciesInfoPanel extends JPanel {
                 );
             }
         });
+        simplegenomehub.runtime.HubSession.attach(dialog, speciesManager.getSession());
         dialog.setVisible(true);
     }
 
@@ -1060,6 +1077,7 @@ public class SpeciesInfoPanel extends JPanel {
                 updateFileOperationButtons();
             }
         });
+        simplegenomehub.runtime.HubSession.attach(dialog, speciesManager.getSession());
         dialog.setVisible(true);
     }
     
@@ -1110,6 +1128,7 @@ public class SpeciesInfoPanel extends JPanel {
                                 // Show annotation type selection dialog
                                 AnnotationTypeSelectionDialog selectionDialog = new AnnotationTypeSelectionDialog(
                                     SwingUtilities.getWindowAncestor(SpeciesInfoPanel.this), currentSpecies);
+                                simplegenomehub.runtime.HubSession.attach(selectionDialog, speciesManager.getSession());
                                 selectionDialog.setVisible(true);
                             } else {
                                 JOptionPane.showMessageDialog(SpeciesInfoPanel.this,
@@ -1129,12 +1148,14 @@ public class SpeciesInfoPanel extends JPanel {
                     }
                 };
                 
-                worker.execute();
+                simplegenomehub.runtime.HubSession.execute(this, worker);
+                simplegenomehub.runtime.HubSession.attach(loadingDialog, speciesManager.getSession());
                 loadingDialog.setVisible(true);
             } else {
                 // Data already loaded, show dialog directly
                 AnnotationTypeSelectionDialog selectionDialog = new AnnotationTypeSelectionDialog(
                     SwingUtilities.getWindowAncestor(this), currentSpecies);
+                simplegenomehub.runtime.HubSession.attach(selectionDialog, speciesManager.getSession());
                 selectionDialog.setVisible(true);
                 
                 // Refresh buttons in case data was modified
@@ -1187,7 +1208,7 @@ public class SpeciesInfoPanel extends JPanel {
                         // File exists but no metadata - generate on demand
                         logger.info("Generating metadata for count check: " + type.getShortName());
                         AnnotationMetadata newMetadata = AnnotationMetadata.analyzeFile(dataFile, type);
-                        currentSpecies.setAnnotationMetadata(type, newMetadata);
+                        currentSpecies.setAnnotationMetadataInMemory(type, newMetadata);
                         counts.put(type, newMetadata.getUniqueGenes());
                         foundAnyMetadata = true;
                     } else {

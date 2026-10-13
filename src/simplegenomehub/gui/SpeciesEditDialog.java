@@ -56,9 +56,12 @@ public class SpeciesEditDialog extends JDialog {
      */
     public SpeciesEditDialog(Window parent, SpeciesInfo species, SpeciesManager speciesManager) {
         super(parent, "Edit Species - " + species.getDisplayName(), ModalityType.APPLICATION_MODAL);
+        simplegenomehub.runtime.HubSession.attach(this, simplegenomehub.runtime.HubSession.forComponent(parent));
         
         this.species = species;
+        simplegenomehub.runtime.HubSession.attach(this, simplegenomehub.runtime.HubSession.forDataPath(species.getSpeciesDir()));
         this.speciesManager = speciesManager;
+        simplegenomehub.runtime.HubSession.attach(this, speciesManager.getSession());
         
         initializeComponents();
         setupLayout();
@@ -595,7 +598,7 @@ public class SpeciesEditDialog extends JDialog {
             }
         });
         
-        worker.execute();
+        simplegenomehub.runtime.HubSession.execute(this, worker);
         progressDialog.setVisible(true);
     }
     

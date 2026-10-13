@@ -32,6 +32,7 @@ public class SpeciesMatchDetailsDialog extends JDialog {
     
     public SpeciesMatchDetailsDialog(Dialog parent, SpeciesMatchResult result) {
         super(parent, "Species Match Details", false);
+        simplegenomehub.runtime.HubSession.attach(this, simplegenomehub.runtime.HubSession.forComponent(parent));
         this.result = result;
         
         initializeComponents();
