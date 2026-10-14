@@ -64,6 +64,12 @@ public class ExpressionExperiment {
     
     // Associated data files
     private List<ExpressionMatrix> matrices;
+    /**
+     * Data type persisted in the experiment metadata.  The current UI imports
+     * one primary matrix per experiment, so this field provides an explicit,
+     * stable type value when the matrix is reloaded from disk.
+     */
+    private ExpressionMatrix.DataType storedDataType;
     private File metadataFile;
     private String notes;
     
@@ -195,6 +201,9 @@ public class ExpressionExperiment {
     public void addMatrix(ExpressionMatrix matrix) {
         if (matrix != null && !matrices.contains(matrix)) {
             matrices.add(matrix);
+            if (storedDataType == null) {
+                storedDataType = matrix.getDataType();
+            }
             logger.info("Added matrix: " + matrix.getName() + " to experiment: " + experimentId);
         }
     }
@@ -252,6 +261,9 @@ public class ExpressionExperiment {
             writer.println("  \"title\": \"" + escapeJson(title) + "\",");
             writer.println("  \"description\": \"" + escapeJson(description) + "\",");
             writer.println("  \"experiment_type\": \"" + experimentType.getShortName() + "\",");
+            ExpressionMatrix.DataType metadataType = getStoredDataType();
+            writer.println("  \"data_type\": \""
+                + (metadataType != null ? metadataType.getShortName() : "") + "\",");
             writer.println("  \"import_time\": \"" + importTime.format(DateTimeFormatter.ISO_LOCAL_DATE_TIME) + "\",");
             
             if (experimentDate != null) {
@@ -329,6 +341,7 @@ public class ExpressionExperiment {
             ExpressionExperiment experiment = new ExpressionExperiment(experimentId, title);
             experiment.metadataFile = file;
             experiment.description = extractJsonValue(json, "description");
+            experiment.storedDataType = parseDataType(extractJsonValue(json, "data_type"));
             experiment.investigator = extractJsonValue(json, "investigator");
             experiment.institution = extractJsonValue(json, "institution");
             experiment.platform = extractJsonValue(json, "platform");
@@ -373,6 +386,19 @@ public class ExpressionExperiment {
         if (endIndex == -1) return "";
         
         return json.substring(startIndex, endIndex);
+    }
+
+    private static ExpressionMatrix.DataType parseDataType(String value) {
+        if (value == null || value.trim().isEmpty()) {
+            return null;
+        }
+        String normalized = value.trim().toUpperCase(Locale.ROOT);
+        for (ExpressionMatrix.DataType type : ExpressionMatrix.DataType.values()) {
+            if (type.name().equals(normalized) || type.getShortName().toUpperCase(Locale.ROOT).equals(normalized)) {
+                return type;
+            }
+        }
+        return null;
     }
     
     /**
@@ -447,6 +473,24 @@ public class ExpressionExperiment {
     }
     
     public List<ExpressionMatrix> getMatrices() { return new ArrayList<>(matrices); }
+
+    /**
+     * Return the explicitly persisted matrix type.  Unlike the matrix object,
+     * this value remains available before the matrix file is reloaded.
+     */
+    public ExpressionMatrix.DataType getStoredDataType() {
+        if (storedDataType != null) {
+            return storedDataType;
+        }
+        if (!matrices.isEmpty() && matrices.get(0) != null) {
+            return matrices.get(0).getDataType();
+        }
+        return null;
+    }
+
+    public void setStoredDataType(ExpressionMatrix.DataType dataType) {
+        this.storedDataType = dataType;
+    }
     public int getMatrixCount() { return matrices.size(); }
     
     public File getMetadataFile() { return metadataFile; }

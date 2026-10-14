@@ -28,6 +28,8 @@ public final class SpeciesDataVersionManager {
     private static final String STATS_FILE_NAME = "stat.txt";
     private static final String FUNCTIONAL_ANNOTATION_DIR = "FunctionalAnnotation";
     private static final String GENOME_ANALYSIS_DIR = "GenomeAnalysis";
+    private static final String POPULATION_DIR = "Population";
+    private static final String POPULATION_VCF_DIR = "VCF";
     private static final String[] LEGACY_ANALYSIS_DIRS = {
         "AdvanceCircos",
         "GenomeCompare",
@@ -49,9 +51,13 @@ public final class SpeciesDataVersionManager {
 
         int migratedSpeciesCount = 0;
         int stampedStatsCount = 0;
+        int stampedSidecarCount = 0;
 
         for (File speciesDir : speciesDirs) {
             try {
+                // Read before stamping: the stamp below already writes the current version.
+                String dataVersion = GeneSetCoordinateMigration.readStampedVersion(speciesDir);
+
                 boolean needsMigration = isLegacySpeciesDirectory(speciesDir);
                 if (needsMigration) {
                     migrateLegacyGenomeAnalysisFolders(speciesDir);
@@ -61,16 +67,25 @@ public final class SpeciesDataVersionManager {
                 if (stampStatsFileVersion(speciesDir)) {
                     stampedStatsCount++;
                 }
+
+                // Data from before the notes sidecar existed gets one per set, so notes and
+                // card colours have a place to live without rewriting the set files.
+                if (GeneSetCoordinateMigration.isBelow(dataVersion, SimpleGenomeHubVersion.SET_NOTES_VERSION)) {
+                    stampedSidecarCount += SetNotesMigration.upgradeSpecies(speciesDir, false).getCreatedCount();
+                }
+
+                cleanupAbandonedImportFiles(speciesDir);
             } catch (Exception e) {
                 logger.log(Level.WARNING,
                     "Failed to process species data version for: " + speciesDir.getAbsolutePath(), e);
             }
         }
 
-        if (migratedSpeciesCount > 0 || stampedStatsCount > 0) {
+        if (migratedSpeciesCount > 0 || stampedStatsCount > 0 || stampedSidecarCount > 0) {
             logger.info(String.format(Locale.ROOT,
-                "Species data version check finished. Migrated %d species folder(s), updated %d stat.txt file(s).",
-                migratedSpeciesCount, stampedStatsCount));
+                "Species data version check finished. Migrated %d species folder(s), updated %d stat.txt file(s), "
+                    + "created %d set notes sidecar(s).",
+                migratedSpeciesCount, stampedStatsCount, stampedSidecarCount));
         }
     }
 
@@ -117,6 +132,28 @@ public final class SpeciesDataVersionManager {
 
             logger.info("Migrated legacy analysis folder: "
                 + sourceDir.getAbsolutePath() + " -> " + targetDir.getAbsolutePath());
+        }
+    }
+
+    /**
+     * Removes staging files left behind when the application was closed mid-import.
+     * Staged names start with a dot and end with {@code .part}, so they never appear as datasets.
+     */
+    private static void cleanupAbandonedImportFiles(File speciesDir) throws IOException {
+        File vcfDir = new File(new File(speciesDir, POPULATION_DIR), POPULATION_VCF_DIR);
+        if (!vcfDir.isDirectory()) {
+            return;
+        }
+
+        File[] leftovers = vcfDir.listFiles((dir, name) ->
+            name.startsWith(".") && name.contains(".part"));
+        if (leftovers == null || leftovers.length == 0) {
+            return;
+        }
+
+        for (File leftover : leftovers) {
+            Files.deleteIfExists(leftover.toPath());
+            logger.info("Removed abandoned import file: " + leftover.getAbsolutePath());
         }
     }
 

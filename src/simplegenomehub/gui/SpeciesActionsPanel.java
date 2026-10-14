@@ -15,6 +15,7 @@ final class SpeciesActionsPanel extends JPanel {
     private final JButton geneViewerButton;
     private final JButton genomeAnalysisButton;
     private final JButton blastAnalysisButton;
+    private final JButton populationAnalysisButton;
 
     SpeciesActionsPanel() {
         Dimension buttonSize = new Dimension(162, 30);
@@ -26,6 +27,7 @@ final class SpeciesActionsPanel extends JPanel {
         geneViewerButton = createMenuButton("Gene Info.", buttonSize);
         genomeAnalysisButton = createMenuButton("Genome Analysis", buttonSize);
         blastAnalysisButton = SimpleGenomeHubUi.createSoftButton("BLAST Analysis", buttonSize);
+        populationAnalysisButton = createMenuButton("Population Analysis", buttonSize);
 
         setupLayout();
     }
@@ -57,9 +59,9 @@ final class SpeciesActionsPanel extends JPanel {
         buttonsPanel.add(expressionDataButton);
         buttonsPanel.add(functionAnnotationButton);
         buttonsPanel.add(genomeAnalysisButton);
+        buttonsPanel.add(populationAnalysisButton);
         buttonsPanel.add(blastAnalysisButton);
         buttonsPanel.add(geneSetButton);
-        buttonsPanel.add(Box.createGlue());
 
         add(buttonsPanel, BorderLayout.CENTER);
     }
@@ -96,6 +98,10 @@ final class SpeciesActionsPanel extends JPanel {
         return blastAnalysisButton;
     }
 
+    JButton getPopulationAnalysisButton() {
+        return populationAnalysisButton;
+    }
+
     void setAllEnabled(boolean enabled) {
         fileOperationsButton.setEnabled(enabled);
         sequenceLookupButton.setEnabled(enabled);
@@ -105,6 +111,7 @@ final class SpeciesActionsPanel extends JPanel {
         geneViewerButton.setEnabled(enabled);
         genomeAnalysisButton.setEnabled(enabled);
         blastAnalysisButton.setEnabled(enabled);
+        populationAnalysisButton.setEnabled(enabled);
     }
 
     void updateButtonStates(boolean fileOperationsEnabled,
@@ -114,7 +121,8 @@ final class SpeciesActionsPanel extends JPanel {
                             boolean geneSetEnabled,
                             boolean geneViewerEnabled,
                             boolean genomeAnalysisEnabled,
-                            boolean blastAnalysisEnabled) {
+                            boolean blastAnalysisEnabled,
+                            boolean populationAnalysisEnabled) {
         fileOperationsButton.setEnabled(fileOperationsEnabled);
         sequenceLookupButton.setEnabled(sequenceLookupEnabled);
         expressionDataButton.setEnabled(expressionDataEnabled);
@@ -123,5 +131,6 @@ final class SpeciesActionsPanel extends JPanel {
         geneViewerButton.setEnabled(geneViewerEnabled);
         genomeAnalysisButton.setEnabled(genomeAnalysisEnabled);
         blastAnalysisButton.setEnabled(blastAnalysisEnabled);
+        populationAnalysisButton.setEnabled(populationAnalysisEnabled);
     }
 }

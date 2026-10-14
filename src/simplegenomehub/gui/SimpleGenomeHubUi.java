@@ -10,6 +10,8 @@ import javax.swing.plaf.basic.BasicSplitPaneUI;
 import javax.swing.table.JTableHeader;
 import javax.swing.text.JTextComponent;
 import java.awt.event.AWTEventListener;
+import java.awt.event.ContainerAdapter;
+import java.awt.event.ContainerEvent;
 import java.awt.event.WindowEvent;
 import java.awt.*;
 
@@ -21,7 +23,14 @@ public final class SimpleGenomeHubUi {
     private static final int COMBO_BOX_MIN_HEIGHT = 30;
     private static final int COMBO_BOX_HORIZONTAL_PADDING = 42;
     private static final int COMBO_BOX_MAX_AUTO_WIDTH = 420;
-    private static final String DIALOG_STYLE_PACKAGE_PREFIX = "simplegenomehub.gui";
+    /**
+     * Windows in these packages receive the shared SimpleGenomeHub styling automatically.
+     * The application's own packages (including the ported population-genetics windows) are
+     * covered so migrated dialogs match the rest of the application without extra wiring.
+     */
+    private static final String DIALOG_STYLE_PACKAGE_PREFIX = "simplegenomehub";
+    /** Marks containers that already watch for dynamically added children. */
+    private static final String DYNAMIC_STYLE_INSTALLED = "sgh.dynamicStyleInstalled";
 
     public static final Color APP_BACKGROUND = SimpleGenomeHubStyle.APP_BACKGROUND;
     public static final Color TITLE_BLUE = SimpleGenomeHubStyle.TITLE_BLUE;
@@ -41,6 +50,8 @@ public final class SimpleGenomeHubUi {
     public static final Color MENU_HOVER_BACKGROUND = SimpleGenomeHubStyle.MENU_HOVER_BACKGROUND;
     public static final Color MENU_BORDER = SimpleGenomeHubStyle.MENU_BORDER;
     public static final Color MENU_TEXT = SimpleGenomeHubStyle.MENU_TEXT;
+    /** Foreground used for styled lists, matching the menu text colour. */
+    private static final Color TEXT_PRIMARY_LIST = new Color(45, 63, 90);
 
     private static volatile boolean dialogStylingInstalled;
     private static volatile boolean menuStylingInstalled;
@@ -67,23 +78,26 @@ public final class SimpleGenomeHubUi {
                 }
 
                 Window window = ((WindowEvent) event).getWindow();
-                if (!(window instanceof JDialog)) {
+                if (!(window instanceof JDialog) && !(window instanceof JFrame)) {
+                    return;
+                }
+                if (!(window instanceof RootPaneContainer)) {
                     return;
                 }
 
-                JDialog dialog = (JDialog) window;
-                if (Boolean.TRUE.equals(dialog.getRootPane().getClientProperty("sgh.dialogStyled"))) {
+                JRootPane rootPane = ((RootPaneContainer) window).getRootPane();
+                if (Boolean.TRUE.equals(rootPane.getClientProperty("sgh.dialogStyled"))) {
                     return;
                 }
-                if (!shouldApplyGlobalDialogStyle(dialog)) {
+                if (!shouldApplyGlobalDialogStyle(window)) {
                     return;
                 }
 
-                dialog.getRootPane().putClientProperty("sgh.dialogStyled", Boolean.TRUE);
+                rootPane.putClientProperty("sgh.dialogStyled", Boolean.TRUE);
                 if (SwingUtilities.isEventDispatchThread()) {
-                    applyDialogStyle(dialog);
+                    applyWindowStyle(window);
                 } else {
-                    SwingUtilities.invokeLater(() -> applyDialogStyle(dialog));
+                    SwingUtilities.invokeLater(() -> applyWindowStyle(window));
                 }
             };
 
@@ -175,6 +189,10 @@ public final class SimpleGenomeHubUi {
     }
 
     public static void styleSplitPane(JSplitPane splitPane) {
+        // Replacing the UI resets the divider location, so keep whatever the owner configured.
+        int configuredDividerLocation = splitPane.getDividerLocation();
+        double configuredResizeWeight = splitPane.getResizeWeight();
+
         splitPane.setBorder(BorderFactory.createEmptyBorder());
         splitPane.setOpaque(false);
         splitPane.setContinuousLayout(true);
@@ -242,21 +260,53 @@ public final class SimpleGenomeHubUi {
                 };
             }
         });
+
+        splitPane.setResizeWeight(configuredResizeWeight);
+        if (configuredDividerLocation > 0) {
+            splitPane.setDividerLocation(configuredDividerLocation);
+        }
     }
 
-    private static boolean shouldApplyGlobalDialogStyle(JDialog dialog) {
-        if (dialog == null) {
+    private static boolean shouldApplyGlobalDialogStyle(Window window) {
+        if (window == null) {
             return false;
         }
 
-        Package dialogPackage = dialog.getClass().getPackage();
-        String packageName = dialogPackage == null ? "" : dialogPackage.getName();
-        return packageName.startsWith(DIALOG_STYLE_PACKAGE_PREFIX);
+        Package windowPackage = window.getClass().getPackage();
+        String packageName = windowPackage == null ? "" : windowPackage.getName();
+        if (!packageName.startsWith(DIALOG_STYLE_PACKAGE_PREFIX)) {
+            return false;
+        }
+        // The application shell lays itself out; only auxiliary windows are styled here.
+        return !(window instanceof JFrame) || !containsApplicationShell((JFrame) window);
     }
 
-    public static void applyDialogStyle(JDialog dialog) {
-        dialog.getRootPane().setBorder(new LineBorder(new Color(170, 191, 220), 1));
-        Container contentPane = dialog.getContentPane();
+    private static boolean containsApplicationShell(JFrame frame) {
+        return frame.getContentPane() != null && containsApplicationShell(frame.getContentPane());
+    }
+
+    private static boolean containsApplicationShell(Component component) {
+        if (component instanceof SimpleGenomeHubMainPanel) {
+            return true;
+        }
+        if (component instanceof Container) {
+            for (Component child : ((Container) component).getComponents()) {
+                if (containsApplicationShell(child)) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    /** Applies the shared SimpleGenomeHub chrome to a dialog or frame. */
+    public static void applyWindowStyle(Window window) {
+        if (!(window instanceof RootPaneContainer)) {
+            return;
+        }
+        RootPaneContainer container = (RootPaneContainer) window;
+        container.getRootPane().setBorder(new LineBorder(new Color(170, 191, 220), 1));
+        Container contentPane = container.getContentPane();
         contentPane.setBackground(DIALOG_BACKGROUND);
 
         if (contentPane instanceof JComponent) {
@@ -264,10 +314,18 @@ public final class SimpleGenomeHubUi {
         }
 
         styleComponentTree(contentPane);
-        dialog.repaint();
+        window.repaint();
+    }
+
+    public static void applyDialogStyle(JDialog dialog) {
+        applyWindowStyle(dialog);
     }
 
     private static void styleComponentTree(Component component) {
+        if (component instanceof Container) {
+            installDynamicStyling((Container) component);
+        }
+
         if (component instanceof JSplitPane) {
             styleSplitPane((JSplitPane) component);
         }
@@ -282,6 +340,10 @@ public final class SimpleGenomeHubUi {
 
         if (component instanceof JTree) {
             styleTree((JTree) component);
+        }
+
+        if (component instanceof JList) {
+            styleList((JList<?>) component);
         }
 
         if (component instanceof JProgressBar) {
@@ -324,8 +386,59 @@ public final class SimpleGenomeHubUi {
         }
     }
 
-    private static void styleSurface(JComponent component) {
-        if (component instanceof JPanel) {
+    /**
+     * Widgets created after the window was styled (added rows, groups, comparisons…) would
+     * otherwise keep the raw look-and-feel. Each styled container therefore styles late children.
+     * Only widget-level chrome is applied, so dynamic content can never disturb window geometry.
+     */
+    private static void installDynamicStyling(Container container) {
+        if (container instanceof JComponent) {
+            JComponent component = (JComponent) container;
+            if (Boolean.TRUE.equals(component.getClientProperty(DYNAMIC_STYLE_INSTALLED))) {
+                return;
+            }
+            component.putClientProperty(DYNAMIC_STYLE_INSTALLED, Boolean.TRUE);
+        }
+
+        container.addContainerListener(new ContainerAdapter() {
+            @Override
+            public void componentAdded(ContainerEvent event) {
+                styleAddedComponent(event.getChild());
+            }
+        });
+    }
+
+    private static void styleAddedComponent(Component component) {
+        if (component instanceof JButton) {
+            styleButton((JButton) component);
+        } else if (component instanceof JLabel) {
+            styleLabel((JLabel) component);
+        } else if (component instanceof JTextComponent) {
+            styleTextComponent((JTextComponent) component);
+        } else if (component instanceof JTable) {
+            styleTable((JTable) component);
+        } else if (component instanceof JList) {
+            styleList((JList<?>) component);
+        } else if (component instanceof JProgressBar) {
+            styleProgressBar((JProgressBar) component);
+        } else if (component instanceof JScrollPane) {
+            styleScrollPane((JScrollPane) component);
+        }
+
+        if (component instanceof JComponent) {
+            // Backgrounds are layout-neutral, so late content blends in like the rest of the window.
+            styleSurface((JComponent) component);
+            styleTitledBorder((JComponent) component);
+        }
+
+        if (component instanceof Container) {
+            for (Component child : ((Container) component).getComponents()) {
+                styleAddedComponent(child);
+            }
+        }
+    }
+
+    private static void styleSurface(JComponent component) {        if (component instanceof JPanel) {
             component.setBackground(DIALOG_PANEL_BACKGROUND);
         } else if (component instanceof JViewport) {
             component.setBackground(Color.WHITE);
@@ -426,8 +539,18 @@ public final class SimpleGenomeHubUi {
         }
     }
 
-    private static void styleComboBox(JComboBox<?> comboBox) {
-        comboBox.setBackground(Color.WHITE);
+    /** Sample/entry lists share the table palette so dialogs look consistent. */
+    private static void styleList(JList<?> list) {
+        list.setBackground(Color.WHITE);
+        list.setForeground(TEXT_PRIMARY_LIST);
+        list.setSelectionBackground(new Color(255, 236, 205));
+        list.setSelectionForeground(new Color(61, 55, 49));
+        if (!(list.getParent() instanceof JViewport)) {
+            list.setBorder(BorderFactory.createLineBorder(CARD_BORDER, 1));
+        }
+    }
+
+    private static void styleComboBox(JComboBox<?> comboBox) {        comboBox.setBackground(Color.WHITE);
         comboBox.setBorder(BorderFactory.createLineBorder(CARD_BORDER, 1));
 
         Dimension preferredSize = comboBox.getPreferredSize();

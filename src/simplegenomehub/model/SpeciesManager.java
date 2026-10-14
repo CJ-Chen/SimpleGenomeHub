@@ -4,6 +4,7 @@
 package simplegenomehub.model;
 
 import simplegenomehub.config.SimpleGenomeHubConfig;
+import simplegenomehub.util.PopulationImportGuard;
 import simplegenomehub.util.fileio.SpeciesDataVersionManager;
 import simplegenomehub.util.performance.LazySpeciesLoader;
 import simplegenomehub.util.performance.PerformanceMonitor;
@@ -260,6 +261,15 @@ public class SpeciesManager {
             return false;
         }
 
+        // A running population-data import stages a large file inside this directory.
+        if (PopulationImportGuard.isBusy(species.getSpeciesDir())) {
+            JOptionPane.showMessageDialog(null,
+                PopulationImportGuard.describeBusyFor(species.getSpeciesDir())
+                    + "\nPlease wait for it to finish or cancel it before deleting this genome.",
+                "Import In Progress", JOptionPane.WARNING_MESSAGE);
+            return false;
+        }
+
         // Delete directory structure
         boolean deleted = deleteDirectory(species.getSpeciesDir());
         if (!deleted) {
@@ -330,6 +340,15 @@ public class SpeciesManager {
         if (!identityChanged) {
             species.setNotes(normalizedNotes);
             return updateSpecies(species);
+        }
+
+        // Renaming moves the genome directory, which would strand a running import's staged file.
+        if (PopulationImportGuard.isBusy(species.getSpeciesDir())) {
+            JOptionPane.showMessageDialog(null,
+                PopulationImportGuard.describeBusyFor(species.getSpeciesDir())
+                    + "\nPlease wait for it to finish or cancel it before renaming this genome.",
+                "Import In Progress", JOptionPane.WARNING_MESSAGE);
+            return false;
         }
 
         if (!config.isDataRootConfigured()) {
@@ -470,6 +489,14 @@ public class SpeciesManager {
      * Set data root directory and reload species
      */
     public boolean setDataRootDirectory(File newDir) {
+        // Switching the root reloads every data unit while an import may still be publishing.
+        if (PopulationImportGuard.isAnyBusy()) {
+            JOptionPane.showMessageDialog(null,
+                PopulationImportGuard.describeAnyBusy()
+                    + "\nPlease wait for it to finish or cancel it before changing the data directory.",
+                "Import In Progress", JOptionPane.WARNING_MESSAGE);
+            return false;
+        }
         if (config.setDataRootDir(newDir)) {
             loadSpeciesData();
             

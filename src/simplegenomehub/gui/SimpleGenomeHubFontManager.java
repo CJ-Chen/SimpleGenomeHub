@@ -67,6 +67,8 @@ public final class SimpleGenomeHubFontManager {
             );
             SimpleGenomeHubStyle.setUserFontScalePercent(currentScalePercent);
             SimpleGenomeHubStyle.installGlobalFontDefaults();
+            // Painted text (FST charts, genome browser) reads the same scale as widget text.
+            simplegenomehub.population.fst.FstUiStyle.setScalePercentOverride(currentScalePercent);
             installWindowOpenListener();
             installed = true;
         }
@@ -230,6 +232,8 @@ public final class SimpleGenomeHubFontManager {
         currentScalePercent = clampedScalePercent;
         SimpleGenomeHubStyle.setUserFontScalePercent(clampedScalePercent);
         SimpleGenomeHubStyle.installGlobalFontDefaults();
+        // Keeps the ported charts in step while the slider is still being dragged.
+        simplegenomehub.population.fst.FstUiStyle.setScalePercentOverride(clampedScalePercent);
         applyScaleToOpenWindows(previousScalePercent);
 
         if (persistToConfig) {

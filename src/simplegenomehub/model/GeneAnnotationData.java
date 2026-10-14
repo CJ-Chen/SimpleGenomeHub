@@ -5,7 +5,6 @@
 package simplegenomehub.model;
 
 import biocjava.bioIO.GeneOntology.EnrichMent.GOTermEnrichment;
-
 import biocjava.bioIO.GeneOntology.EnrichMent.SimpleEnricher;
 import biocjava.bioDoer.GeneOntology.Annotation.GoAnnoPipe;
 import biocjava.bioDoer.Kegg.AdvancedForEnrichment.KeggEnrichment;
@@ -873,7 +872,7 @@ public class GeneAnnotationData {
         explicitlyClearedTypes.add(type);
         
         // Update statistics
-        updateStatistics();
+        rebuildStatisticsFromAnnotations();
         
         logger.info("Removed all " + totalRemoved + " annotations of type: " + type.getShortName());
         return totalRemoved;
@@ -897,7 +896,7 @@ public class GeneAnnotationData {
         termHierarchy.clear();
         
         // Update statistics
-        updateStatistics();
+        rebuildStatisticsFromAnnotations();
         
         logger.info("Cleared all " + totalRemoved + " annotations");
         return totalRemoved;
@@ -976,7 +975,7 @@ public class GeneAnnotationData {
         }
         
         // Update statistics
-        updateStatistics();
+        rebuildStatisticsFromAnnotations();
         
         logger.info("Transcript-to-gene conversion completed: " + 
                    "Processed " + totalOriginal + " annotations, " +
@@ -1371,34 +1370,53 @@ public class GeneAnnotationData {
     }
     
     /**
-     * Update annotation statistics
+     * Refresh annotation statistics using incrementally maintained annotation counts.
      */
     private void updateStatistics() {
         Set<String> allGenes = new HashSet<>();
         totalGenes = 0;
-        
-        // Reset all counts to 0
-        for (AnnotationType type : AnnotationType.values()) {
-            annotationCounts.put(type, 0);
-        }
-        
-        // Count annotations for each type
+
         for (AnnotationType type : AnnotationType.values()) {
             Map<String, List<GeneAnnotation>> typeMap = annotations.get(type);
-            int typeCount = 0;
-            
-            for (List<GeneAnnotation> geneAnnotations : typeMap.values()) {
-                typeCount += geneAnnotations.size();
-                allGenes.addAll(typeMap.keySet());
+            if (typeMap == null || typeMap.isEmpty()) {
+                continue;
             }
-            
-            annotationCounts.put(type, typeCount);
-            
+
+            allGenes.addAll(typeMap.keySet());
+            int typeCount = annotationCounts.getOrDefault(type, 0);
             if (typeCount > 0) {
                 logger.info("Updated statistics for " + type.getShortName() + ": " + typeCount + " annotations");
             }
         }
-        
+
+        annotatedGenes = allGenes.size();
+    }
+
+    /**
+     * Fully rebuild annotation statistics from the current in-memory maps.
+     * Use this after bulk structural changes that bypass incremental counters.
+     */
+    private void rebuildStatisticsFromAnnotations() {
+        Set<String> allGenes = new HashSet<>();
+        totalGenes = 0;
+
+        for (AnnotationType type : AnnotationType.values()) {
+            Map<String, List<GeneAnnotation>> typeMap = annotations.get(type);
+            int typeCount = 0;
+
+            if (typeMap != null && !typeMap.isEmpty()) {
+                allGenes.addAll(typeMap.keySet());
+                for (List<GeneAnnotation> geneAnnotations : typeMap.values()) {
+                    typeCount += geneAnnotations.size();
+                }
+            }
+
+            annotationCounts.put(type, typeCount);
+            if (typeCount > 0) {
+                logger.info("Updated statistics for " + type.getShortName() + ": " + typeCount + " annotations");
+            }
+        }
+
         annotatedGenes = allGenes.size();
     }
     
@@ -1406,18 +1424,8 @@ public class GeneAnnotationData {
      * Public method to update statistics (for debugging and final updates)
      */
     public void updateFinalStatistics() {
-        updateStatistics();
+        rebuildStatisticsFromAnnotations();
         logger.info("Final statistics update completed");
-    }
-    
-    private AnnotationType getAnnotationType(Map<String, List<GeneAnnotation>> typeMap) {
-        // Helper to determine annotation type from map
-        for (AnnotationType type : AnnotationType.values()) {
-            if (annotations.get(type) == typeMap) {
-                return type;
-            }
-        }
-        return AnnotationType.CUSTOM;
     }
     
     /**

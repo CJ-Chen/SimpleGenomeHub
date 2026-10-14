@@ -40,6 +40,9 @@ public class SpeciesInfo {
     private File functionalAnnotationDir;
     private File geneSetDir;
     private File genomeAnalysisDir;
+    private File populationDir;
+    private File populationVcfDir;
+    private File populationFstDir;
     private List<ExpressionExperiment> expressionExperiments;
     private GeneAnnotationData functionalAnnotations;
     
@@ -94,6 +97,9 @@ public class SpeciesInfo {
         this.functionalAnnotationDir = new File(speciesDir, "FunctionalAnnotation");
         this.geneSetDir = new File(speciesDir, "GeneSet");
         this.genomeAnalysisDir = new File(speciesDir, "GenomeAnalysis");
+        this.populationDir = new File(speciesDir, "Population");
+        this.populationVcfDir = new File(populationDir, "VCF");
+        this.populationFstDir = new File(populationDir, "FST");
         
         // Initialize type-specific annotation directories
         initializeAnnotationTypeDirectories();
@@ -143,6 +149,12 @@ public class SpeciesInfo {
             }
             if (!genomeAnalysisDir.exists()) {
                 genomeAnalysisDir.mkdirs();
+            }
+            if (!populationVcfDir.exists()) {
+                populationVcfDir.mkdirs();
+            }
+            if (!populationFstDir.exists()) {
+                populationFstDir.mkdirs();
             }
             
             // Create type-specific annotation directories
@@ -830,6 +842,43 @@ public class SpeciesInfo {
 
     public File getGenomeAnalysisDir() {
         return genomeAnalysisDir;
+    }
+
+    public File getPopulationDir() {
+        return populationDir;
+    }
+
+    public File getPopulationVcfDir() {
+        return populationVcfDir;
+    }
+
+    public File getPopulationFstDir() {
+        return populationFstDir;
+    }
+
+    /**
+     * Check whether any VCF dataset has been imported for this genome.
+     */
+    public boolean hasPopulationData() {
+        return listPopulationVcfFiles().length > 0;
+    }
+
+    /**
+     * List imported VCF datasets (the stored originals, not their metadata sidecars).
+     */
+    public File[] listPopulationVcfFiles() {
+        if (populationVcfDir == null || !populationVcfDir.isDirectory()) {
+            return new File[0];
+        }
+        File[] files = populationVcfDir.listFiles((dir, name) -> {
+            String lower = name.toLowerCase(Locale.ROOT);
+            return lower.endsWith(".vcf") || lower.endsWith(".vcf.gz");
+        });
+        if (files == null) {
+            return new File[0];
+        }
+        Arrays.sort(files, (left, right) -> left.getName().compareToIgnoreCase(right.getName()));
+        return files;
     }
 
     public boolean hasGeneSets() {

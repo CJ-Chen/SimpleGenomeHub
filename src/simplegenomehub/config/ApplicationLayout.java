@@ -81,6 +81,25 @@ public final class ApplicationLayout {
         return javaExecutable != null && javaExecutable.isFile() ? javaExecutable : null;
     }
 
+    public static File findFirstExistingAppFile(String... relativePaths) {
+        if (relativePaths == null || relativePaths.length == 0) {
+            return null;
+        }
+
+        File appHome = getAppHomeDirectory();
+        for (String relativePath : relativePaths) {
+            if (relativePath == null || relativePath.trim().isEmpty()) {
+                continue;
+            }
+
+            File candidate = new File(appHome, relativePath);
+            if (candidate.isFile()) {
+                return candidate.getAbsoluteFile();
+            }
+        }
+        return null;
+    }
+
     public static File resolveExecutable(File directory, String baseName) {
         if (directory == null || baseName == null || baseName.trim().isEmpty()) {
             return null;
