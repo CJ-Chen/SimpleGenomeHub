@@ -3,11 +3,14 @@
  */
 package simplegenomehub.gui;
 
+import simplegenomehub.config.ApplicationLayout;
 import simplegenomehub.config.SimpleGenomeHubConfig;
 import simplegenomehub.model.*;
+import simplegenomehub.util.RuntimeLogManager;
 import javax.swing.*;
 import java.awt.*;
 import java.io.File;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * Main GUI panel for SimpleGenomeHub application
@@ -16,6 +19,9 @@ import java.io.File;
  * @author SimpleGenomeHub
  */
 public class SimpleGenomeHubMainPanel extends JPanel implements SpeciesManager.SpeciesManagerListener {
+
+    private static final AtomicBoolean ERROR_DIALOG_VISIBLE = new AtomicBoolean(false);
+    private static volatile JFrame mainFrame;
     
     // Core components
     private SimpleGenomeHubConfig config;
@@ -176,6 +182,11 @@ public class SimpleGenomeHubMainPanel extends JPanel implements SpeciesManager.S
 
         JPanel rightPanel = new JPanel(new FlowLayout(FlowLayout.RIGHT, 10, 0));
         rightPanel.setOpaque(false);
+        JButton logButton = new JButton("Runtime Log");
+        logButton.setToolTipText("View the current application log");
+        logButton.addActionListener(event -> new RuntimeLogDialog(
+            SwingUtilities.getWindowAncestor(this)).setVisible(true));
+        rightPanel.add(logButton);
         rightPanel.add(dataDirLabel);
         rightPanel.add(SimpleGenomeHubFontManager.createScaleControl());
         statusPanel.add(rightPanel, BorderLayout.EAST);
@@ -315,29 +326,52 @@ public class SimpleGenomeHubMainPanel extends JPanel implements SpeciesManager.S
     }
     
     public static void main(String[] args) {
+        RuntimeLogManager.initialize();
+        Thread.setDefaultUncaughtExceptionHandler(SimpleGenomeHubMainPanel::handleUnexpectedError);
+
         SwingUtilities.invokeLater(() -> {
-            SimpleGenomeHubFontManager.install();
-            // Use default Swing look and feel
-            
-            // Create main frame
-            JFrame frame = new JFrame("SimpleGenomeHub");
-            frame.setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
-            frame.setSize(1510, 860);
-            frame.setLocationRelativeTo(null);
-            
-            // Add main panel
-            SimpleGenomeHubMainPanel mainPanel = new SimpleGenomeHubMainPanel();
-            frame.add(mainPanel);
-            
-            // Set window icon (if available)
             try {
-                // You could add an icon here
-                // frame.setIconImage(Toolkit.getDefaultToolkit().getImage("icon.png"));
-            } catch (Exception e) {
-                // Ignore icon loading errors
+                SimpleGenomeHubFontManager.install();
+
+                JFrame frame = new JFrame("SimpleGenomeHub");
+                mainFrame = frame;
+                frame.setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
+                frame.setSize(1510, 860);
+                frame.setLocationRelativeTo(null);
+
+                SimpleGenomeHubMainPanel mainPanel = new SimpleGenomeHubMainPanel();
+                frame.add(mainPanel);
+
+                try {
+                    File iconFile = ApplicationLayout.findFirstExistingAppFile(
+                        "assets" + File.separator + "icons" + File.separator + "app.png",
+                        "assets" + File.separator + "icons" + File.separator + "windows" + File.separator + "SimpleGenomeHub.ico"
+                    );
+                    if (iconFile != null) {
+                        frame.setIconImage(new ImageIcon(iconFile.getAbsolutePath()).getImage());
+                    }
+                } catch (Exception ignored) {
+                    // An icon failure must not prevent the application from starting.
+                }
+
+                frame.setVisible(true);
+            } catch (Throwable error) {
+                handleUnexpectedError(Thread.currentThread(), error);
             }
-            
-            frame.setVisible(true);
+        });
+    }
+
+    private static void handleUnexpectedError(Thread thread, Throwable error) {
+        RuntimeLogManager.logUncaughtException(thread, error);
+        SwingUtilities.invokeLater(() -> {
+            if (!ERROR_DIALOG_VISIBLE.compareAndSet(false, true)) {
+                return;
+            }
+            try {
+                RuntimeLogDialog.showUnexpectedError(mainFrame, error);
+            } finally {
+                ERROR_DIALOG_VISIBLE.set(false);
+            }
         });
     }
 }

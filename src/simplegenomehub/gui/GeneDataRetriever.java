@@ -6,7 +6,7 @@ package simplegenomehub.gui;
 
 import simplegenomehub.model.*;
 import simplegenomehub.util.fileio.CachedSequenceLookup;
-import simplegenomehub.util.fileio.SequenceExtractor;
+import simplegenomehub.util.fileio.GeneSetSupport;
 
 import java.io.*;
 import java.util.*;
@@ -29,6 +29,7 @@ public class GeneDataRetriever {
     // Cache for frequently accessed data
     private Map<String, CachedSequenceLookup> sequenceLookupCache = new HashMap<>();
     private Map<String, Map<String, List<GeneAnnotationData.GeneAnnotation>>> annotationCache = new HashMap<>();
+    private Map<String, GeneSetImportSupport.AnnotationIndex> geneIdIndexCache = new HashMap<>();
     
     /**
      * Search for comprehensive gene information
@@ -45,7 +46,7 @@ public class GeneDataRetriever {
             GeneStructureInfo structureInfo = getGeneStructure(result.getResolvedGeneId(), species);
             result.setStructureInfo(structureInfo);
 
-            boolean found = result.hasSequenceData() || result.hasExpressionData() ||
+            boolean found = result.isFound() || result.hasSequenceData() || result.hasExpressionData() ||
                            !annotations.isEmpty() || structureInfo != null;
             result.setFound(found);
 
@@ -72,13 +73,27 @@ public class GeneDataRetriever {
 
         try {
             Map<String, String> sequences = getGeneSequences(geneId, species);
+            String resolvedGeneId = resolveGeneId(geneId, sequences);
+            boolean exactGffGeneMatch = false;
+
+            // Sequence IDs retain priority. Parse the GFF only when exact and
+            // approximate sequence lookup both fail.
+            if (sequences.isEmpty()) {
+                GffGeneSequenceMatch gffMatch = findSequencesForExactGffGene(geneId, species);
+                if (gffMatch != null) {
+                    exactGffGeneMatch = true;
+                    resolvedGeneId = gffMatch.getGeneId();
+                    sequences = gffMatch.getSequences();
+                }
+            }
+
             result.setSequences(sequences);
-            result.setResolvedGeneId(resolveGeneId(geneId, sequences));
+            result.setResolvedGeneId(resolvedGeneId);
 
             Map<String, ExpressionData> expressionData = getGeneExpressionData(geneId, species);
             result.setExpressionData(expressionData);
 
-            boolean found = !sequences.isEmpty() || !expressionData.isEmpty();
+            boolean found = !sequences.isEmpty() || !expressionData.isEmpty() || exactGffGeneMatch;
             result.setFound(found);
             result.setGeneDescription(generateGeneDescription(result.getResolvedGeneId(), Collections.emptyList()));
         } catch (Exception e) {
@@ -130,6 +145,98 @@ public class GeneDataRetriever {
         }
         
         return sequences;
+    }
+
+    private GffGeneSequenceMatch findSequencesForExactGffGene(String geneId, SpeciesInfo species) {
+        try {
+            GeneSetImportSupport.AnnotationIndex annotationIndex = getGeneIdIndex(species);
+            String canonicalGeneId = annotationIndex.findExactCanonicalGeneId(geneId);
+            if (canonicalGeneId == null) {
+                return null;
+            }
+
+            for (String transcriptId : annotationIndex.getTranscriptsForGene(canonicalGeneId)) {
+                Map<String, String> transcriptSequences = getGeneSequences(transcriptId, species);
+                if (!transcriptSequences.isEmpty()) {
+                    logger.info("Resolved GFF gene ID " + geneId + " to transcript " + transcriptId);
+                    return new GffGeneSequenceMatch(canonicalGeneId, transcriptSequences);
+                }
+            }
+
+            logger.info("Found exact GFF gene ID without a matching cached sequence: " + canonicalGeneId);
+            return new GffGeneSequenceMatch(canonicalGeneId, Collections.emptyMap());
+        } catch (Exception e) {
+            logger.log(Level.FINE, "Unable to resolve gene ID from GFF: " + geneId, e);
+            return null;
+        }
+    }
+
+    /**
+     * Chromosome and 1-based location of a gene or transcript id, taken from the annotation
+     * index that is already cached for this species - so a jump to the genome browser does not
+     * parse the annotation again.
+     *
+     * @return the located row, or {@code null} when the id is not in the annotation
+     */
+    public GeneSetSupport.Entry findAnnotationEntry(SpeciesInfo species, String geneId) {
+        if (species == null || geneId == null || geneId.trim().isEmpty()) {
+            return null;
+        }
+
+        try {
+            GeneSetImportSupport.AnnotationIndex annotationIndex = getGeneIdIndex(species);
+            Map<String, GeneSetSupport.Entry> entriesById = annotationIndex.entriesById();
+            String trimmedGeneId = geneId.trim();
+
+            GeneSetSupport.Entry entry = entriesById.get(trimmedGeneId);
+            if (entry == null) {
+                String canonicalTranscriptId = annotationIndex.findCanonicalTranscriptId(trimmedGeneId);
+                if (canonicalTranscriptId != null) {
+                    entry = entriesById.get(canonicalTranscriptId);
+                }
+            }
+            if (entry == null) {
+                // A gene id resolves to its transcripts; the first one carries the gene span.
+                for (String transcriptId : annotationIndex.getTranscriptsForGene(trimmedGeneId)) {
+                    entry = entriesById.get(transcriptId);
+                    if (entry != null) {
+                        break;
+                    }
+                }
+            }
+            return entry;
+        } catch (Exception e) {
+            logger.log(Level.WARNING, "Unable to locate " + geneId + " in the annotation", e);
+            return null;
+        }
+    }
+
+    private GeneSetImportSupport.AnnotationIndex getGeneIdIndex(SpeciesInfo species) throws Exception {
+        String speciesKey = species.getSpeciesDirectoryName();
+        GeneSetImportSupport.AnnotationIndex annotationIndex = geneIdIndexCache.get(speciesKey);
+        if (annotationIndex == null) {
+            annotationIndex = GeneSetImportSupport.loadAnnotationIndex(species);
+            geneIdIndexCache.put(speciesKey, annotationIndex);
+        }
+        return annotationIndex;
+    }
+
+    private static final class GffGeneSequenceMatch {
+        private final String geneId;
+        private final Map<String, String> sequences;
+
+        private GffGeneSequenceMatch(String geneId, Map<String, String> sequences) {
+            this.geneId = geneId;
+            this.sequences = sequences;
+        }
+
+        private String getGeneId() {
+            return geneId;
+        }
+
+        private Map<String, String> getSequences() {
+            return sequences;
+        }
     }
     
     /**
@@ -658,9 +765,15 @@ public class GeneDataRetriever {
         
         if (matrixFile.exists()) {
             try {
+                ExpressionMatrix.DataType dataType = experiment.getStoredDataType();
+                if (dataType == null) {
+                    logger.warning("Missing data_type in metadata for experiment " + experimentId
+                        + "; matrix was not loaded to avoid assuming TPM.");
+                    return;
+                }
                 ExpressionMatrix matrix = new ExpressionMatrix(experimentId + "_matrix", 
                                                               experiment.getTitle() + " Matrix", 
-                                                              ExpressionMatrix.DataType.TPM);
+                                                              dataType);
                 boolean loaded = matrix.loadFromFile(matrixFile);
                 if (loaded) {
                     experiment.addMatrix(matrix);
@@ -682,6 +795,7 @@ public class GeneDataRetriever {
     public void clearCaches() {
         sequenceLookupCache.clear();
         annotationCache.clear();
+        geneIdIndexCache.clear();
         logger.info("Gene data caches cleared");
     }
 }

@@ -21,6 +21,7 @@ import java.io.File;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -43,6 +44,8 @@ public class AdvancedCircosLaunchDialog extends JDialog {
 
     private final File projectDir;
     private final SpeciesInfo currentSpecies;
+    private boolean started;
+    private boolean disposing;
 
     private JButton startButton;
     private JCheckBox gcTrackCheckBox;
@@ -67,6 +70,8 @@ public class AdvancedCircosLaunchDialog extends JDialog {
 
         this.projectDir = projectDir;
         this.currentSpecies = currentSpecies;
+        this.started = false;
+        this.disposing = false;
 
         initializeComponents();
         setupLayout();
@@ -305,12 +310,13 @@ public class AdvancedCircosLaunchDialog extends JDialog {
         getRootPane().getActionMap().put("ESCAPE", new AbstractAction() {
             @Override
             public void actionPerformed(ActionEvent e) {
-                dispose();
+                closeDialog();
             }
         });
     }
 
     private void handleStart(ActionEvent event) {
+        started = true;
         startButton.setEnabled(false);
         setCursor(Cursor.getPredefinedCursor(Cursor.WAIT_CURSOR));
         final List<String> selectedTracks = collectSelectedTracks();
@@ -351,7 +357,7 @@ public class AdvancedCircosLaunchDialog extends JDialog {
             protected void done() {
                 try {
                     get();
-                    dispose();
+                    closeDialog();
                 } catch (Exception ex) {
                     Throwable cause = ex.getCause() != null ? ex.getCause() : ex;
                     logger.log(Level.SEVERE, "Failed to launch Advanced Circos project.", cause);
@@ -368,6 +374,67 @@ public class AdvancedCircosLaunchDialog extends JDialog {
             }
         };
         worker.execute();
+    }
+
+    @Override
+    public void dispose() {
+        if (disposing) {
+            super.dispose();
+            return;
+        }
+        closeDialog();
+    }
+
+    private void closeDialog() {
+        if (disposing) {
+            return;
+        }
+        disposing = true;
+        if (!started) {
+            cleanupUnusedProjectDirectory();
+        }
+        try {
+            super.dispose();
+        } finally {
+            disposing = false;
+        }
+    }
+
+    private void cleanupUnusedProjectDirectory() {
+        if (projectDir == null || !projectDir.exists()) {
+            return;
+        }
+        try {
+            deleteDirectoryRecursively(projectDir.toPath());
+        } catch (IOException ex) {
+            logger.log(Level.WARNING,
+                "Failed to delete unused Advanced Circos project directory: " + projectDir.getAbsolutePath(),
+                ex
+            );
+        }
+    }
+
+    private static void deleteDirectoryRecursively(Path directory) throws IOException {
+        if (directory == null || !Files.exists(directory)) {
+            return;
+        }
+        try (java.util.stream.Stream<Path> pathStream = Files.walk(directory)) {
+            pathStream
+                .sorted(java.util.Comparator.reverseOrder())
+                .forEach(path -> {
+                    try {
+                        Files.deleteIfExists(path);
+                    } catch (IOException ex) {
+                        throw new RuntimeException(ex);
+                    }
+                });
+        } catch (RuntimeException ex) {
+            Throwable cause = ex.getCause();
+            if (cause instanceof IOException) {
+                throw (IOException) cause;
+            }
+            throw ex;
+        }
     }
 
     private void prepareWorkDirectoryAndTracks(List<String> selectedTracks) throws IOException {

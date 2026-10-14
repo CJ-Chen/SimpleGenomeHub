@@ -5,6 +5,7 @@ import simplegenomehub.model.SpeciesInfo;
 import simplegenomehub.util.fileio.AdvancedCircosPreviewExporter;
 import simplegenomehub.util.fileio.DualSyntenyPreviewExporter;
 import simplegenomehub.util.fileio.GenomeStatsCalculator;
+import simplegenomehub.util.fileio.SetNoteSupport;
 
 import javax.imageio.ImageIO;
 import javax.swing.*;
@@ -29,8 +30,11 @@ import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeParseException;
 import java.util.Arrays;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
+import java.util.function.BiConsumer;
 
 final class SpeciesOverviewPanel extends JPanel {
 
@@ -40,11 +44,20 @@ final class SpeciesOverviewPanel extends JPanel {
     private static final Color GENE_SET_SCROLL_TRACK_COLOR = new Color(236, 241, 247);
     private static final Color GENE_SET_SCROLL_THUMB_COLOR = new Color(180, 191, 206);
     private static final Color GENE_SET_SCROLL_THUMB_HOVER_COLOR = new Color(153, 168, 188);
+    private static final Color GENE_SET_ENTRY_BACKGROUND = new Color(247, 250, 254);
+    private static final Color GENE_SET_ENTRY_SELECTED_BACKGROUND = new Color(232, 241, 252);
+    private static final Color GENE_SET_NOTE_TEXT = new Color(102, 114, 132);
+    private static final String GENE_SET_LIST_CARD = "list";
+    private static final String GENE_SET_STATUS_CARD = "status";
     private static final DateTimeFormatter OTHER_DATA_DIR_TIME_FORMAT =
         DateTimeFormatter.ofPattern("yyyy-M-d-H-m");
     private static final DateTimeFormatter OTHER_DATA_DISPLAY_TIME_FORMAT =
         DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm");
     private static final String OTHER_DATA_PROMPT_CARD = "prompt";
+    private static final String OTHER_DATA_EXPRESSION_CARD = "expression";
+    private static final String OTHER_DATA_FUNCTIONAL_ANNOTATION_CARD = "functionalAnnotation";
+    private static final String OTHER_DATA_POPULATION_VCF_CARD = "populationVcf";
+    private static final String OTHER_DATA_POPULATION_FST_CARD = "populationFst";
     private static final String OTHER_DATA_PREVIEW_CARD = "preview";
 
     private final JLabel speciesNameLabel;
@@ -52,7 +65,14 @@ final class SpeciesOverviewPanel extends JPanel {
     private final JLabel importTimeLabel;
     private final JTextArea notesArea;
     private final JTextArea statisticsArea;
-    private final JTextArea geneSetArea;
+    private final DefaultListModel<GeneSetDisplayEntry> geneSetListModel;
+    private final JList<GeneSetDisplayEntry> geneSetList;
+    private final GeneSetEntryRenderer geneSetEntryRenderer;
+    private final CardLayout geneSetContentCardLayout;
+    private final JPanel geneSetContentCardPanel;
+    private final JLabel geneSetStatusLabel;
+    private final BiConsumer<SpeciesInfo, String> geneSetFastaAction;
+    private final BiConsumer<SpeciesInfo, String> geneSetDetailAction;
     private final StatisticsTabButton genomeStatisticsTab;
     private final StatisticsTabButton chromosomeStatisticsTab;
     private final JPanel geneSetTabSection;
@@ -62,6 +82,13 @@ final class SpeciesOverviewPanel extends JPanel {
     private final CardLayout otherDataCardLayout;
     private final JPanel otherDataCardPanel;
     private final JLabel otherDataPromptLabel;
+    private final JTextArea otherDataExpressionNameLabel;
+    private final JTextArea otherDataExpressionGenesLabel;
+    private final JTextArea otherDataExpressionSamplesLabel;
+    private final JTextArea otherDataExpressionSampleNamesLabel;
+    private final JTextArea otherDataFunctionalAnnotationSummaryArea;
+    private final JTextArea otherDataPopulationVcfSummaryArea;
+    private final JTextArea otherDataPopulationFstSummaryArea;
     private final JLabel otherDataTimeLabel;
     private final JLabel otherDataGenome1Label;
     private final JLabel otherDataGenome2Label;
@@ -73,17 +100,26 @@ final class SpeciesOverviewPanel extends JPanel {
 
     private SpeciesInfo currentSpecies;
     private File currentGeneSetFile;
+    private JPanel geneSetCardPanel;
     private File currentOtherDataPreviewFile;
     private StatisticsView currentStatisticsView;
     private boolean chromosomeStatsReloadInProgress;
 
-    SpeciesOverviewPanel() {
+    SpeciesOverviewPanel(BiConsumer<SpeciesInfo, String> geneSetFastaAction,
+                         BiConsumer<SpeciesInfo, String> geneSetDetailAction) {
+        this.geneSetFastaAction = geneSetFastaAction;
+        this.geneSetDetailAction = geneSetDetailAction;
         speciesNameLabel = new JLabel();
         versionLabel = new JLabel();
         importTimeLabel = new JLabel();
         notesArea = new JTextArea(3, 30);
         statisticsArea = new JTextArea(9, 30);
-        geneSetArea = new JTextArea(9, 30);
+        geneSetListModel = new DefaultListModel<>();
+        geneSetList = new JList<>(geneSetListModel);
+        geneSetEntryRenderer = new GeneSetEntryRenderer();
+        geneSetContentCardLayout = new CardLayout();
+        geneSetContentCardPanel = new JPanel(geneSetContentCardLayout);
+        geneSetStatusLabel = new JLabel("No Gene Set", SwingConstants.CENTER);
         genomeStatisticsTab = new StatisticsTabButton("Genome Statistics", StatisticsView.GENOME);
         chromosomeStatisticsTab = new StatisticsTabButton("Chromosome Statistics", StatisticsView.CHROMOSOME);
         geneSetTabSection = new JPanel(new BorderLayout(0, 0));
@@ -93,6 +129,13 @@ final class SpeciesOverviewPanel extends JPanel {
         otherDataCardLayout = new CardLayout();
         otherDataCardPanel = new JPanel(otherDataCardLayout);
         otherDataPromptLabel = new JLabel("Please select an analysis result first.", SwingConstants.CENTER);
+        otherDataExpressionNameLabel = new WrappingTextArea("Name: -");
+        otherDataExpressionGenesLabel = new WrappingTextArea("Genes: -");
+        otherDataExpressionSamplesLabel = new WrappingTextArea("Total samples: -");
+        otherDataExpressionSampleNamesLabel = new WrappingTextArea("Sample names: -");
+        otherDataFunctionalAnnotationSummaryArea = new JTextArea(8, 24);
+        otherDataPopulationVcfSummaryArea = new JTextArea(8, 24);
+        otherDataPopulationFstSummaryArea = new JTextArea(8, 24);
         otherDataTimeLabel = new JLabel("Time: -");
         otherDataGenome1Label = new JLabel("");
         otherDataGenome2Label = new JLabel("");
@@ -130,16 +173,47 @@ final class SpeciesOverviewPanel extends JPanel {
         statisticsArea.setBackground(Color.WHITE);
         statisticsArea.setBorder(SimpleGenomeHubUi.createInnerPadding(8, 8, 8, 8));
 
-        geneSetArea.setEditable(false);
-        geneSetArea.setLineWrap(false);
-        geneSetArea.setWrapStyleWord(false);
-        geneSetArea.setFont(SimpleGenomeHubStyle.FONT_MONOSPACED_PLAIN_12);
-        geneSetArea.setForeground(STAT_TEXT_COLOR);
-        geneSetArea.setBackground(Color.WHITE);
-        geneSetArea.setBorder(SimpleGenomeHubUi.createInnerPadding(8, 8, 8, 8));
+        geneSetList.setCellRenderer(geneSetEntryRenderer);
+        geneSetList.setFixedCellHeight(48);
+        geneSetList.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
+        geneSetList.setBackground(Color.WHITE);
+        geneSetList.setBorder(BorderFactory.createEmptyBorder(2, 2, 2, 2));
+        installGeneSetListActions();
+        geneSetStatusLabel.setFont(SimpleGenomeHubStyle.FONT_SANS_PLAIN_15);
+        geneSetStatusLabel.setForeground(STAT_TEXT_COLOR);
+        geneSetContentCardPanel.setOpaque(false);
 
         otherDataPromptLabel.setFont(SimpleGenomeHubStyle.FONT_SANS_PLAIN_15);
         otherDataPromptLabel.setForeground(STAT_TEXT_COLOR);
+
+        configureOtherDataExpressionArea(otherDataExpressionNameLabel, SimpleGenomeHubStyle.FONT_SANS_BOLD_15);
+        configureOtherDataExpressionArea(otherDataExpressionGenesLabel, SimpleGenomeHubStyle.FONT_SANS_PLAIN_14);
+        configureOtherDataExpressionArea(otherDataExpressionSamplesLabel, SimpleGenomeHubStyle.FONT_SANS_PLAIN_14);
+        configureOtherDataExpressionArea(otherDataExpressionSampleNamesLabel, SimpleGenomeHubStyle.FONT_SANS_PLAIN_14);
+
+        otherDataFunctionalAnnotationSummaryArea.setEditable(false);
+        otherDataFunctionalAnnotationSummaryArea.setLineWrap(false);
+        otherDataFunctionalAnnotationSummaryArea.setWrapStyleWord(false);
+        otherDataFunctionalAnnotationSummaryArea.setFont(SimpleGenomeHubStyle.FONT_MONOSPACED_PLAIN_12);
+        otherDataFunctionalAnnotationSummaryArea.setForeground(STAT_TEXT_COLOR);
+        otherDataFunctionalAnnotationSummaryArea.setBackground(Color.WHITE);
+        otherDataFunctionalAnnotationSummaryArea.setBorder(SimpleGenomeHubUi.createInnerPadding(8, 8, 8, 8));
+
+        otherDataPopulationVcfSummaryArea.setEditable(false);
+        otherDataPopulationVcfSummaryArea.setLineWrap(false);
+        otherDataPopulationVcfSummaryArea.setWrapStyleWord(false);
+        otherDataPopulationVcfSummaryArea.setFont(SimpleGenomeHubStyle.FONT_MONOSPACED_PLAIN_12);
+        otherDataPopulationVcfSummaryArea.setForeground(STAT_TEXT_COLOR);
+        otherDataPopulationVcfSummaryArea.setBackground(Color.WHITE);
+        otherDataPopulationVcfSummaryArea.setBorder(SimpleGenomeHubUi.createInnerPadding(8, 8, 8, 8));
+
+        otherDataPopulationFstSummaryArea.setEditable(false);
+        otherDataPopulationFstSummaryArea.setLineWrap(false);
+        otherDataPopulationFstSummaryArea.setWrapStyleWord(false);
+        otherDataPopulationFstSummaryArea.setFont(SimpleGenomeHubStyle.FONT_MONOSPACED_PLAIN_12);
+        otherDataPopulationFstSummaryArea.setForeground(STAT_TEXT_COLOR);
+        otherDataPopulationFstSummaryArea.setBackground(Color.WHITE);
+        otherDataPopulationFstSummaryArea.setBorder(SimpleGenomeHubUi.createInnerPadding(8, 8, 8, 8));
 
         otherDataTimeLabel.setFont(SimpleGenomeHubStyle.FONT_SANS_BOLD_15);
         otherDataTimeLabel.setForeground(STAT_TEXT_COLOR);
@@ -251,6 +325,7 @@ final class SpeciesOverviewPanel extends JPanel {
         JPanel infoPanel = createInfoPanel();
         JPanel statsPanel = createStatisticsPanel();
         JPanel geneSetPanel = createGeneSetPanel();
+        geneSetCardPanel = geneSetPanel;
         JPanel otherDataPanel = createOtherDataPanel();
         Dimension cardSize = new Dimension(470, 228);
         infoPanel.setPreferredSize(cardSize);
@@ -410,6 +485,61 @@ final class SpeciesOverviewPanel extends JPanel {
         promptPanel.setOpaque(false);
         promptPanel.add(otherDataPromptLabel, BorderLayout.CENTER);
 
+        JPanel expressionPanel = new WidthTrackingPanel(new GridBagLayout());
+        expressionPanel.setOpaque(false);
+        GridBagConstraints expressionGbc = new GridBagConstraints();
+        expressionGbc.gridx = 0;
+        expressionGbc.gridy = 0;
+        expressionGbc.weightx = 1.0;
+        expressionGbc.fill = GridBagConstraints.HORIZONTAL;
+        expressionGbc.anchor = GridBagConstraints.NORTHWEST;
+        expressionGbc.insets = new Insets(0, 0, 8, 0);
+        expressionPanel.add(otherDataExpressionNameLabel, expressionGbc);
+        expressionGbc.gridy++;
+        expressionPanel.add(otherDataExpressionGenesLabel, expressionGbc);
+        expressionGbc.gridy++;
+        expressionPanel.add(otherDataExpressionSamplesLabel, expressionGbc);
+        expressionGbc.gridy++;
+        expressionGbc.insets = new Insets(0, 0, 0, 0);
+        expressionPanel.add(otherDataExpressionSampleNamesLabel, expressionGbc);
+        expressionGbc.gridy++;
+        expressionGbc.weighty = 1.0;
+        expressionGbc.fill = GridBagConstraints.BOTH;
+        expressionPanel.add(new JPanel(), expressionGbc);
+
+        JScrollPane expressionScrollPane = new JScrollPane(expressionPanel);
+        expressionScrollPane.setBorder(BorderFactory.createEmptyBorder());
+        expressionScrollPane.setOpaque(false);
+        expressionScrollPane.getViewport().setOpaque(false);
+        expressionScrollPane.getViewport().setBackground(Color.WHITE);
+        expressionScrollPane.setHorizontalScrollBarPolicy(JScrollPane.HORIZONTAL_SCROLLBAR_NEVER);
+        expressionScrollPane.setVerticalScrollBarPolicy(JScrollPane.VERTICAL_SCROLLBAR_AS_NEEDED);
+        ModernScrollBarStyle.applyTo(expressionScrollPane);
+
+        JScrollPane functionalAnnotationScrollPane = new JScrollPane(otherDataFunctionalAnnotationSummaryArea);
+        functionalAnnotationScrollPane.setBorder(BorderFactory.createEmptyBorder());
+        functionalAnnotationScrollPane.setOpaque(false);
+        functionalAnnotationScrollPane.getViewport().setBackground(Color.WHITE);
+        functionalAnnotationScrollPane.setHorizontalScrollBarPolicy(JScrollPane.HORIZONTAL_SCROLLBAR_AS_NEEDED);
+        functionalAnnotationScrollPane.setVerticalScrollBarPolicy(JScrollPane.VERTICAL_SCROLLBAR_AS_NEEDED);
+        ModernScrollBarStyle.applyTo(functionalAnnotationScrollPane);
+
+        JScrollPane populationVcfScrollPane = new JScrollPane(otherDataPopulationVcfSummaryArea);
+        populationVcfScrollPane.setBorder(BorderFactory.createEmptyBorder());
+        populationVcfScrollPane.setOpaque(false);
+        populationVcfScrollPane.getViewport().setBackground(Color.WHITE);
+        populationVcfScrollPane.setHorizontalScrollBarPolicy(JScrollPane.HORIZONTAL_SCROLLBAR_AS_NEEDED);
+        populationVcfScrollPane.setVerticalScrollBarPolicy(JScrollPane.VERTICAL_SCROLLBAR_AS_NEEDED);
+        ModernScrollBarStyle.applyTo(populationVcfScrollPane);
+
+        JScrollPane populationFstScrollPane = new JScrollPane(otherDataPopulationFstSummaryArea);
+        populationFstScrollPane.setBorder(BorderFactory.createEmptyBorder());
+        populationFstScrollPane.setOpaque(false);
+        populationFstScrollPane.getViewport().setBackground(Color.WHITE);
+        populationFstScrollPane.setHorizontalScrollBarPolicy(JScrollPane.HORIZONTAL_SCROLLBAR_AS_NEEDED);
+        populationFstScrollPane.setVerticalScrollBarPolicy(JScrollPane.VERTICAL_SCROLLBAR_AS_NEEDED);
+        ModernScrollBarStyle.applyTo(populationFstScrollPane);
+
         JPanel previewPanel = new JPanel(new BorderLayout(0, 4));
         previewPanel.setOpaque(false);
         JPanel previewInfoPanel = new JPanel();
@@ -422,6 +552,10 @@ final class SpeciesOverviewPanel extends JPanel {
         previewPanel.add(otherDataPreviewSplitPane, BorderLayout.CENTER);
 
         otherDataCardPanel.add(promptPanel, OTHER_DATA_PROMPT_CARD);
+        otherDataCardPanel.add(expressionScrollPane, OTHER_DATA_EXPRESSION_CARD);
+        otherDataCardPanel.add(functionalAnnotationScrollPane, OTHER_DATA_FUNCTIONAL_ANNOTATION_CARD);
+        otherDataCardPanel.add(populationVcfScrollPane, OTHER_DATA_POPULATION_VCF_CARD);
+        otherDataCardPanel.add(populationFstScrollPane, OTHER_DATA_POPULATION_FST_CARD);
         otherDataCardPanel.add(previewPanel, OTHER_DATA_PREVIEW_CARD);
         panel.add(otherDataCardPanel, BorderLayout.CENTER);
         return panel;
@@ -484,14 +618,21 @@ final class SpeciesOverviewPanel extends JPanel {
             BorderFactory.createLineBorder(STAT_BORDER_COLOR, 2),
             SimpleGenomeHubUi.createInnerPadding(10, 10, 10, 10)
         ));
-        JScrollPane scrollPane = new JScrollPane(geneSetArea);
+        JScrollPane scrollPane = new JScrollPane(geneSetList);
         scrollPane.setBorder(BorderFactory.createEmptyBorder());
         scrollPane.setOpaque(false);
         scrollPane.getViewport().setBackground(Color.WHITE);
         scrollPane.setVerticalScrollBarPolicy(JScrollPane.VERTICAL_SCROLLBAR_AS_NEEDED);
-        scrollPane.setHorizontalScrollBarPolicy(JScrollPane.HORIZONTAL_SCROLLBAR_AS_NEEDED);
+        scrollPane.setHorizontalScrollBarPolicy(JScrollPane.HORIZONTAL_SCROLLBAR_NEVER);
         ModernScrollBarStyle.applyTo(scrollPane);
-        panel.add(scrollPane, BorderLayout.CENTER);
+
+        JPanel statusPanel = new JPanel(new BorderLayout());
+        statusPanel.setOpaque(false);
+        statusPanel.add(geneSetStatusLabel, BorderLayout.CENTER);
+
+        geneSetContentCardPanel.add(scrollPane, GENE_SET_LIST_CARD);
+        geneSetContentCardPanel.add(statusPanel, GENE_SET_STATUS_CARD);
+        panel.add(geneSetContentCardPanel, BorderLayout.CENTER);
         return panel;
     }
 
@@ -531,6 +672,18 @@ final class SpeciesOverviewPanel extends JPanel {
         }
 
         switch (selectionContext.getSelectionKind()) {
+            case FUNCTIONAL_ANNOTATION:
+                showFunctionalAnnotationOtherData(selectionContext.getSpecies());
+                break;
+            case EXPRESSION_FILE:
+                showExpressionOtherData(selectionContext.getSelectedFile());
+                break;
+            case POPULATION_VCF_FILE:
+                showPopulationVcfOtherData(selectionContext.getSelectedFile());
+                break;
+            case POPULATION_FST_RESULT:
+                showPopulationFstOtherData(selectionContext.getSelectedFile());
+                break;
             case ADVANCE_CIRCOS_RESULT:
                 showAdvanceCircosOtherData(selectionContext.getSelectedFile());
                 break;
@@ -548,6 +701,11 @@ final class SpeciesOverviewPanel extends JPanel {
 
     JTextArea getNotesArea() {
         return notesArea;
+    }
+
+    /** Other Data card text area used for FST results (exposed for the Other Data checks). */
+    JTextArea getOtherDataPopulationFstSummaryArea() {
+        return otherDataPopulationFstSummaryArea;
     }
 
     private void clearDisplay() {
@@ -639,7 +797,7 @@ final class SpeciesOverviewPanel extends JPanel {
 
         currentGeneSetFile = resolveSelectedGeneSetFile(geneSetFiles);
         rebuildGeneSetTabs(geneSetFiles);
-        updateGeneSetText();
+        updateGeneSetEntries();
     }
 
     private File[] listGeneSetFiles() {
@@ -733,7 +891,30 @@ final class SpeciesOverviewPanel extends JPanel {
         updateGeneSetDisplay();
     }
 
-    private void updateGeneSetText() {
+    /**
+     * Selects the given Gene Set (or Region Set) and brings the Gene Set card into view.
+     * Called when the matching file node is selected in the species tree.
+     */
+    void showGeneSet(File geneSetFile) {
+        if (geneSetFile == null) {
+            return;
+        }
+        selectGeneSetFile(geneSetFile);
+        scrollGeneSetCardIntoView();
+    }
+
+    private void scrollGeneSetCardIntoView() {
+        JPanel card = geneSetCardPanel;
+        if (card == null) {
+            return;
+        }
+        SwingUtilities.invokeLater(() -> {
+            Rectangle bounds = card.getBounds();
+            card.scrollRectToVisible(new Rectangle(0, 0, bounds.width, bounds.height));
+        });
+    }
+
+    private void updateGeneSetEntries() {
         if (currentGeneSetFile == null) {
             setGeneSetStatusText("No Gene Set");
             return;
@@ -741,25 +922,231 @@ final class SpeciesOverviewPanel extends JPanel {
 
         try {
             String content = GeneSetFileSupport.readGeneSetContent(currentGeneSetFile);
-            geneSetArea.setText(content);
-        } catch (IOException e) {
-            geneSetArea.setText("Failed to read Gene Set file.\n" + e.getMessage());
+            Map<String, SetNoteSupport.Note> notes = SetNoteSupport.read(currentGeneSetFile);
+            List<GeneSetDisplayEntry> entries = buildGeneSetDisplayEntries(currentGeneSetFile, content, notes);
+            if (entries.isEmpty()) {
+                setGeneSetStatusText("This Gene Set is empty");
+                return;
+            }
+
+            geneSetListModel.clear();
+            for (GeneSetDisplayEntry entry : entries) {
+                geneSetListModel.addElement(entry);
+            }
+            geneSetList.clearSelection();
+            geneSetList.ensureIndexIsVisible(0);
+            geneSetContentCardLayout.show(geneSetContentCardPanel, GENE_SET_LIST_CARD);
+        } catch (IOException | IllegalArgumentException e) {
+            setGeneSetStatusText("Failed to read Gene Set file: " + e.getMessage());
         }
-        geneSetArea.setCaretPosition(0);
+    }
+
+    /**
+     * Cards of one set. The notes sidecar also carries the display order, so its ids come
+     * first and everything the sidecar does not know about follows in file order.
+     */
+    private List<GeneSetDisplayEntry> buildGeneSetDisplayEntries(File geneSetFile, String content,
+                                                                Map<String, SetNoteSupport.Note> notes) {
+        Map<String, GeneSetDisplayEntry> entriesByKey = new LinkedHashMap<>();
+        if (GeneSetFileSupport.detectSetKind(geneSetFile) != GeneSetFileSupport.SetKind.REGION) {
+            for (String geneId : GeneSetFileSupport.parseGeneIds(content)) {
+                entriesByKey.putIfAbsent(geneId, GeneSetDisplayEntry.forGene(geneId, notes.get(geneId)));
+            }
+        } else {
+            for (GeneSetFileSupport.RegionEntry region : GeneSetFileSupport.parseRegionEntries(content)) {
+                String regionKey = SetNoteSupport.regionKey(
+                    region.getChromosomeName(), region.getStartPos(), region.getEndPos());
+                entriesByKey.putIfAbsent(regionKey, GeneSetDisplayEntry.forRegion(regionKey, notes.get(regionKey)));
+            }
+        }
+
+        List<GeneSetDisplayEntry> entries = new java.util.ArrayList<>(entriesByKey.size());
+        for (String noteKey : notes.keySet()) {
+            GeneSetDisplayEntry entry = entriesByKey.remove(noteKey);
+            if (entry != null) {
+                entries.add(entry);
+            }
+        }
+        entries.addAll(entriesByKey.values());
+        return entries;
     }
 
     private void setGeneSetStatusText(String text) {
-        geneSetArea.setText(text);
-        geneSetArea.setCaretPosition(0);
+        geneSetListModel.clear();
+        geneSetStatusLabel.setText(text);
+        geneSetContentCardLayout.show(geneSetContentCardPanel, GENE_SET_STATUS_CARD);
+    }
+
+    private void installGeneSetListActions() {
+        MouseAdapter mouseAdapter = new MouseAdapter() {
+            @Override
+            public void mouseClicked(MouseEvent event) {
+                if (!SwingUtilities.isLeftMouseButton(event)) {
+                    return;
+                }
+                GeneSetCardAction action = resolveGeneSetCardAction(event.getPoint());
+                if (action == null || currentSpecies == null) {
+                    return;
+                }
+
+                int index = geneSetList.locationToIndex(event.getPoint());
+                if (index < 0 || index >= geneSetListModel.size()) {
+                    return;
+                }
+                GeneSetDisplayEntry entry = geneSetListModel.get(index);
+                if (!entry.isActionable()) {
+                    return;
+                }
+
+                if (action == GeneSetCardAction.FASTA) {
+                    geneSetFastaAction.accept(currentSpecies, entry.getQueryId());
+                } else if (action == GeneSetCardAction.DETAIL) {
+                    geneSetDetailAction.accept(currentSpecies, entry.getQueryId());
+                }
+                event.consume();
+            }
+
+            @Override
+            public void mouseMoved(MouseEvent event) {
+                geneSetList.setCursor(resolveGeneSetCardAction(event.getPoint()) != null
+                    ? Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
+                    : Cursor.getDefaultCursor());
+            }
+
+            @Override
+            public void mouseExited(MouseEvent event) {
+                geneSetList.setCursor(Cursor.getDefaultCursor());
+            }
+        };
+        geneSetList.addMouseListener(mouseAdapter);
+        geneSetList.addMouseMotionListener(mouseAdapter);
+    }
+
+    private GeneSetCardAction resolveGeneSetCardAction(Point point) {
+        int index = geneSetList.locationToIndex(point);
+        if (index < 0 || index >= geneSetListModel.size()) {
+            return null;
+        }
+
+        Rectangle cellBounds = geneSetList.getCellBounds(index, index);
+        if (cellBounds == null || !cellBounds.contains(point)) {
+            return null;
+        }
+
+        GeneSetDisplayEntry entry = geneSetListModel.get(index);
+        if (!entry.isActionable()) {
+            return null;
+        }
+        Point pointInCell = new Point(point.x - cellBounds.x, point.y - cellBounds.y);
+        return geneSetEntryRenderer.findActionAt(
+            geneSetList,
+            entry,
+            index,
+            geneSetList.isSelectedIndex(index),
+            pointInCell,
+            cellBounds.getSize()
+        );
     }
 
     private void showOtherDataPrompt() {
         currentOtherDataPreviewFile = null;
         otherDataTimeLabel.setText("Time: -");
+        updateOtherDataExpressionSummary("Name: -", "Genes: -", "Total samples: -", "Sample names: -");
+        updateOtherDataFunctionalAnnotationSummary("");
         updateOtherDataGenomeLabels(null, null);
         updateOtherDataLinkList(null);
         otherDataPreviewCanvas.clearPreview();
         otherDataCardLayout.show(otherDataCardPanel, OTHER_DATA_PROMPT_CARD);
+    }
+
+    private void showFunctionalAnnotationOtherData(SpeciesInfo species) {
+        if (species == null) {
+            showOtherDataPrompt();
+            return;
+        }
+
+        currentOtherDataPreviewFile = null;
+        otherDataTimeLabel.setText("Time: -");
+        updateOtherDataGenomeLabels(null, null);
+        updateOtherDataLinkList(null);
+        otherDataPreviewCanvas.clearPreview();
+        updateOtherDataFunctionalAnnotationSummary(
+            FunctionalAnnotationSummarySupport.buildSummaryText(species, false, false)
+        );
+        otherDataCardLayout.show(otherDataCardPanel, OTHER_DATA_FUNCTIONAL_ANNOTATION_CARD);
+    }
+
+    private void showExpressionOtherData(File expressionFile) {
+        if (currentSpecies == null || expressionFile == null || !expressionFile.isFile()) {
+            showOtherDataPrompt();
+            return;
+        }
+
+        ExpressionExperimentDisplaySupport.ExpressionOtherDataSummary summary =
+            ExpressionExperimentDisplaySupport.buildOtherDataSummary(currentSpecies, expressionFile);
+
+        currentOtherDataPreviewFile = null;
+        otherDataTimeLabel.setText("Time: -");
+        updateOtherDataGenomeLabels(null, null);
+        updateOtherDataLinkList(null);
+        otherDataPreviewCanvas.clearPreview();
+
+        if (summary == null) {
+            updateOtherDataExpressionSummary(
+                "Name: " + expressionFile.getName(),
+                "Genes: N/A",
+                "Total samples: N/A",
+                "Sample names: No matching experiment metadata"
+            );
+        } else {
+            updateOtherDataExpressionSummary(
+                "Name: " + safeOtherDataValue(summary.getName()),
+                "Genes: " + safeOtherDataValue(summary.getGenes()),
+                "Total samples: " + safeOtherDataValue(summary.getTotalSamples()),
+                "Sample names: " + safeOtherDataValue(summary.getSampleNames())
+            );
+        }
+
+        otherDataCardLayout.show(otherDataCardPanel, OTHER_DATA_EXPRESSION_CARD);
+    }
+
+    private void showPopulationVcfOtherData(File vcfFile) {
+        if (vcfFile == null || !vcfFile.isFile()) {
+            showOtherDataPrompt();
+            return;
+        }
+
+        currentOtherDataPreviewFile = null;
+        otherDataTimeLabel.setText("Time: -");
+        updateOtherDataGenomeLabels(null, null);
+        updateOtherDataLinkList(null);
+        otherDataPreviewCanvas.clearPreview();
+
+        otherDataPopulationVcfSummaryArea.setText(
+            PopulationVcfSummarySupport.buildSummaryText(currentSpecies, vcfFile));
+        otherDataPopulationVcfSummaryArea.setCaretPosition(0);
+        otherDataCardLayout.show(otherDataCardPanel, OTHER_DATA_POPULATION_VCF_CARD);
+    }
+
+    /**
+     * FST result: populations with all of their members plus the comparison strategy that was run.
+     */
+    private void showPopulationFstOtherData(File resultDirectory) {
+        if (resultDirectory == null || !resultDirectory.isDirectory()) {
+            showOtherDataPrompt();
+            return;
+        }
+
+        currentOtherDataPreviewFile = null;
+        otherDataTimeLabel.setText("Time: -");
+        updateOtherDataGenomeLabels(null, null);
+        updateOtherDataLinkList(null);
+        otherDataPreviewCanvas.clearPreview();
+
+        otherDataPopulationFstSummaryArea.setText(
+            PopulationFstSummarySupport.buildSummaryText(currentSpecies, resultDirectory));
+        otherDataPopulationFstSummaryArea.setCaretPosition(0);
+        otherDataCardLayout.show(otherDataCardPanel, OTHER_DATA_POPULATION_FST_CARD);
     }
 
     private void showAdvanceCircosOtherData(File resultDir) {
@@ -821,6 +1208,43 @@ final class SpeciesOverviewPanel extends JPanel {
         otherDataGenome2Label.setVisible(showGenome2);
         otherDataCardPanel.revalidate();
         otherDataCardPanel.repaint();
+    }
+
+    private void updateOtherDataExpressionSummary(String name, String genes,
+                                                  String totalSamples, String sampleNames) {
+        otherDataExpressionNameLabel.setText(safeOtherDataValue(name));
+        otherDataExpressionGenesLabel.setText(safeOtherDataValue(genes));
+        otherDataExpressionSamplesLabel.setText(safeOtherDataValue(totalSamples));
+        otherDataExpressionSampleNamesLabel.setText(safeOtherDataValue(sampleNames));
+
+        otherDataExpressionNameLabel.setToolTipText(otherDataExpressionNameLabel.getText());
+        otherDataExpressionGenesLabel.setToolTipText(otherDataExpressionGenesLabel.getText());
+        otherDataExpressionSamplesLabel.setToolTipText(otherDataExpressionSamplesLabel.getText());
+        otherDataExpressionSampleNamesLabel.setToolTipText(otherDataExpressionSampleNamesLabel.getText());
+        otherDataCardPanel.revalidate();
+        otherDataCardPanel.repaint();
+    }
+
+    private void updateOtherDataFunctionalAnnotationSummary(String summary) {
+        otherDataFunctionalAnnotationSummaryArea.setText(summary == null ? "" : summary.trim());
+        otherDataFunctionalAnnotationSummaryArea.setCaretPosition(0);
+        otherDataFunctionalAnnotationSummaryArea.setToolTipText(
+            otherDataFunctionalAnnotationSummaryArea.getText().isEmpty()
+                ? null
+                : otherDataFunctionalAnnotationSummaryArea.getText()
+        );
+        otherDataCardPanel.revalidate();
+        otherDataCardPanel.repaint();
+    }
+
+    private String safeOtherDataValue(String value) {
+        return value == null || value.trim().isEmpty() ? "-" : value.trim();
+    }
+
+    private void configureOtherDataExpressionArea(JTextArea area, Font font) {
+        area.setFont(font);
+        area.setForeground(STAT_TEXT_COLOR);
+        area.setAlignmentX(Component.LEFT_ALIGNMENT);
     }
 
     private void updateOtherDataLinkList(List<String> linkLines) {
@@ -894,6 +1318,241 @@ final class SpeciesOverviewPanel extends JPanel {
             );
         }
         return "-";
+    }
+
+    private static final class WidthTrackingPanel extends JPanel implements Scrollable {
+
+        WidthTrackingPanel(LayoutManager layout) {
+            super(layout);
+        }
+
+        @Override
+        public Dimension getPreferredScrollableViewportSize() {
+            return getPreferredSize();
+        }
+
+        @Override
+        public int getScrollableUnitIncrement(Rectangle visibleRect, int orientation, int direction) {
+            return 20;
+        }
+
+        @Override
+        public int getScrollableBlockIncrement(Rectangle visibleRect, int orientation, int direction) {
+            return orientation == SwingConstants.VERTICAL
+                ? Math.max(visibleRect.height - 20, 20)
+                : Math.max(visibleRect.width - 20, 20);
+        }
+
+        @Override
+        public boolean getScrollableTracksViewportWidth() {
+            return true;
+        }
+
+        @Override
+        public boolean getScrollableTracksViewportHeight() {
+            return false;
+        }
+    }
+
+    private enum GeneSetCardAction {
+        FASTA,
+        DETAIL
+    }
+
+    private static final class GeneSetDisplayEntry {
+        private final String displayText;
+        private final String queryId;
+        private final SetNoteSupport.Note note;
+
+        private GeneSetDisplayEntry(String displayText, String queryId, SetNoteSupport.Note note) {
+            this.displayText = displayText;
+            this.queryId = queryId;
+            this.note = note;
+        }
+
+        private static GeneSetDisplayEntry forGene(String geneId, SetNoteSupport.Note note) {
+            return new GeneSetDisplayEntry(geneId, geneId, note);
+        }
+
+        private static GeneSetDisplayEntry forRegion(String displayText, SetNoteSupport.Note note) {
+            return new GeneSetDisplayEntry(displayText, null, note);
+        }
+
+        private String getDisplayText() {
+            return displayText;
+        }
+
+        private String getQueryId() {
+            return queryId;
+        }
+
+        private String getNoteText() {
+            return note == null ? "" : note.getText();
+        }
+
+        private Color getCardColor() {
+            return SetNoteUiSupport.colorOf(note);
+        }
+
+        private boolean isActionable() {
+            return queryId != null && !queryId.trim().isEmpty();
+        }
+    }
+
+    private static final class GeneSetEntryRenderer extends JPanel implements ListCellRenderer<GeneSetDisplayEntry> {
+
+        private final JPanel entryPanel;
+        private final JLabel idLabel;
+        private final JLabel noteLabel;
+        private final JPanel actionPanel;
+        private final JButton fastaButton;
+        private final JButton detailButton;
+
+        private GeneSetEntryRenderer() {
+            super(new BorderLayout());
+            setOpaque(true);
+            setBorder(BorderFactory.createEmptyBorder(3, 4, 3, 4));
+
+            entryPanel = new JPanel(new BorderLayout(10, 0));
+            entryPanel.setOpaque(true);
+            entryPanel.setBorder(BorderFactory.createCompoundBorder(
+                BorderFactory.createLineBorder(SimpleGenomeHubStyle.CARD_BORDER, 1, true),
+                BorderFactory.createEmptyBorder(5, 10, 5, 7)
+            ));
+
+            idLabel = new JLabel();
+            idLabel.setFont(SimpleGenomeHubStyle.FONT_SANS_BOLD_13);
+            idLabel.setForeground(STAT_TEXT_COLOR);
+
+            noteLabel = new JLabel();
+            noteLabel.setFont(SimpleGenomeHubStyle.FONT_SANS_PLAIN_12);
+            noteLabel.setForeground(GENE_SET_NOTE_TEXT);
+
+            actionPanel = new JPanel(new FlowLayout(FlowLayout.RIGHT, 6, 0));
+            actionPanel.setOpaque(false);
+            fastaButton = createActionButton("Fasta");
+            detailButton = createActionButton("Detail");
+            actionPanel.add(fastaButton);
+            actionPanel.add(detailButton);
+
+            entryPanel.add(idLabel, BorderLayout.WEST);
+            entryPanel.add(noteLabel, BorderLayout.CENTER);
+            entryPanel.add(actionPanel, BorderLayout.EAST);
+            add(entryPanel, BorderLayout.CENTER);
+        }
+
+        @Override
+        public Component getListCellRendererComponent(JList<? extends GeneSetDisplayEntry> list,
+                                                      GeneSetDisplayEntry value, int index,
+                                                      boolean isSelected, boolean cellHasFocus) {
+            String displayValue = value != null ? value.getDisplayText() : "";
+            String noteValue = value != null ? value.getNoteText() : "";
+            Color cardColor = value != null ? value.getCardColor() : null;
+
+            idLabel.setText(displayValue);
+            idLabel.setToolTipText(noteValue.isEmpty() ? displayValue : displayValue + "   " + noteValue);
+            noteLabel.setText(noteValue.isEmpty() ? "" : shortenNote(noteValue));
+            noteLabel.setToolTipText(noteValue.isEmpty() ? null : noteValue);
+            actionPanel.setVisible(value != null && value.isActionable());
+            setBackground(list.getBackground());
+
+            boolean darkCard = cardColor != null && SetNoteUiSupport.isDark(cardColor);
+            idLabel.setForeground(darkCard ? Color.WHITE : STAT_TEXT_COLOR);
+            noteLabel.setForeground(darkCard ? new Color(233, 239, 246) : GENE_SET_NOTE_TEXT);
+            entryPanel.setBackground(cardColor == null
+                ? (isSelected ? GENE_SET_ENTRY_SELECTED_BACKGROUND : GENE_SET_ENTRY_BACKGROUND)
+                : (isSelected ? SetNoteUiSupport.darker(cardColor, 0.12f) : cardColor));
+            return this;
+        }
+
+        /** The card carries the note next to the id; the tooltip keeps the full text. */
+        private static String shortenNote(String note) {
+            return note.length() <= 24 ? note : note.substring(0, 23) + "...";
+        }
+
+        private GeneSetCardAction findActionAt(JList<? extends GeneSetDisplayEntry> list,
+                                               GeneSetDisplayEntry value, int index, boolean isSelected,
+                                               Point pointInCell, Dimension cellSize) {
+            getListCellRendererComponent(list, value, index, isSelected, false);
+            setSize(cellSize);
+            layoutComponentTree(this);
+
+            Rectangle fastaBounds = SwingUtilities.convertRectangle(
+                fastaButton.getParent(), fastaButton.getBounds(), this);
+            if (fastaBounds.contains(pointInCell)) {
+                return GeneSetCardAction.FASTA;
+            }
+
+            Rectangle detailBounds = SwingUtilities.convertRectangle(
+                detailButton.getParent(), detailButton.getBounds(), this);
+            return detailBounds.contains(pointInCell) ? GeneSetCardAction.DETAIL : null;
+        }
+
+        private static void layoutComponentTree(Container container) {
+            container.doLayout();
+            for (Component component : container.getComponents()) {
+                if (component instanceof Container) {
+                    layoutComponentTree((Container) component);
+                }
+            }
+        }
+
+        private static JButton createActionButton(String text) {
+            JButton button = new JButton(text);
+            Dimension size = new Dimension(68, 28);
+            button.setPreferredSize(size);
+            button.setMinimumSize(size);
+            button.setFont(SimpleGenomeHubStyle.FONT_SANS_BOLD_12);
+            button.setForeground(SimpleGenomeHubStyle.DIALOG_SECONDARY_BUTTON_TEXT);
+            button.setBackground(SimpleGenomeHubStyle.DIALOG_SECONDARY_BUTTON);
+            button.setBorder(BorderFactory.createLineBorder(SimpleGenomeHubStyle.SOFT_BUTTON_BORDER, 1, true));
+            button.setFocusPainted(false);
+            button.setFocusable(false);
+            button.setOpaque(true);
+            return button;
+        }
+    }
+
+    private static final class WrappingTextArea extends JTextArea {
+
+        private int preferredWidth;
+
+        WrappingTextArea(String text) {
+            super(text);
+            preferredWidth = -1;
+            setEditable(false);
+            setLineWrap(true);
+            setWrapStyleWord(true);
+            setOpaque(false);
+            setFocusable(false);
+            setBorder(BorderFactory.createEmptyBorder());
+            setMargin(new Insets(0, 0, 0, 0));
+            setHighlighter(null);
+        }
+
+        @Override
+        public Dimension getPreferredSize() {
+            Container parent = getParent();
+            if (parent != null) {
+                int width = parent.getWidth();
+                if (width > 0) {
+                    Insets insets = getInsets();
+                    int targetWidth = Math.max(1, width - insets.left - insets.right);
+                    if (targetWidth != preferredWidth) {
+                        preferredWidth = targetWidth;
+                        super.setSize(new Dimension(targetWidth, Short.MAX_VALUE));
+                    }
+                }
+            }
+            return super.getPreferredSize();
+        }
+
+        @Override
+        public Dimension getMaximumSize() {
+            Dimension size = getPreferredSize();
+            size.width = Integer.MAX_VALUE;
+            return size;
+        }
     }
 
     private GenomeCompareOtherDataInfo readGenomeCompareOtherDataInfo(File resultDir) {
