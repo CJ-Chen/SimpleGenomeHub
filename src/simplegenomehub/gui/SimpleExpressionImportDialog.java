@@ -7,6 +7,7 @@ import simplegenomehub.runtime.HubWorker;
 
 import simplegenomehub.model.*;
 import simplegenomehub.model.ExpressionMatrix.DataType;
+import simplegenomehub.util.identification.SpeciesSequenceIndex;
 
 import javax.swing.*;
 import javax.swing.border.TitledBorder;
@@ -36,7 +37,9 @@ public class SimpleExpressionImportDialog extends JDialog {
     private SpeciesInfo targetSpecies;
     private ExpressionExperiment currentExperiment;
     private ExpressionMatrix previewMatrix;
+    private ExpressionIdCompatibilityResult previewIdCompatibility;
     private volatile boolean importSuccessful = false;
+    private String importFailureMessage;
     
     // UI Components
     private JTextField filePathField;
@@ -296,6 +299,8 @@ public class SimpleExpressionImportDialog extends JDialog {
         
         File file = new File(filePath);
         if (!file.exists()) {
+            previewMatrix = null;
+            previewIdCompatibility = null;
             setFileInfoMessage("File not found");
             previewArea.setText("");
             importButton.setEnabled(false);
@@ -312,17 +317,30 @@ public class SimpleExpressionImportDialog extends JDialog {
             previewMatrix = new ExpressionMatrix(matrixId, "Preview", selectedType);
             
             if (previewMatrix.loadFromFile(file)) {
+                previewIdCompatibility = validateExpressionIdsAgainstSpecies(previewMatrix);
+
                 // Update file info
                 String formatInfo = delimiter.equals("\t") ? "Tab-delimited" : "Comma-separated";
-                setFileInfoMessage(String.format("%s\n%s\n%.2f MB, %d genes, %d samples",
+                setFileInfoMessage(String.format("%s\n%s\n%.2f MB, %d genes, %d samples\nID matches: %d/%d",
                     formatInfo, file.getName(), file.length() / 1024.0 / 1024.0,
-                    previewMatrix.getGeneCount(), previewMatrix.getSampleCount()));
+                    previewMatrix.getGeneCount(), previewMatrix.getSampleCount(),
+                    previewIdCompatibility.matchedCount, previewMatrix.getGeneCount()));
                 
                 // Show preview
                 showPreview();
                 
-                // Enable import button if validation passed
-                importButton.setEnabled(previewMatrix.isValid());
+                // Enable import only when the file is valid and at least one ID matches the species.
+                importButton.setEnabled(previewMatrix.isValid() && previewIdCompatibility.matchedCount > 0);
+
+                if (previewIdCompatibility.matchedCount == 0) {
+                    JOptionPane.showMessageDialog(this,
+                        "No IDs in the expression file match the current genome.\nImport has been disabled.",
+                        "No Matching IDs", JOptionPane.ERROR_MESSAGE);
+                } else if (previewIdCompatibility.hasUnmatchedIds()) {
+                    JOptionPane.showMessageDialog(this,
+                        buildUnmatchedIdWarningMessage(previewIdCompatibility),
+                        "Unmatched IDs Found", JOptionPane.WARNING_MESSAGE);
+                }
                 
                 if (!previewMatrix.isValid()) {
                     List<String> errors = previewMatrix.getValidationErrors();
@@ -332,12 +350,15 @@ public class SimpleExpressionImportDialog extends JDialog {
                 }
                 
             } else {
+                previewIdCompatibility = null;
                 setFileInfoMessage("Failed to load file.\nPlease check the file format.");
                 previewArea.setText("Error: Unable to parse file. Please ensure it's a tab-delimited or CSV file with headers.");
                 importButton.setEnabled(false);
             }
             
         } catch (Exception e) {
+            previewMatrix = null;
+            previewIdCompatibility = null;
             logger.warning("Error loading file preview: " + e.getMessage());
             setFileInfoMessage("Error loading file");
             previewArea.setText("Error: " + e.getMessage());
@@ -438,6 +459,13 @@ public class SimpleExpressionImportDialog extends JDialog {
                 "No Valid File", JOptionPane.WARNING_MESSAGE);
             return;
         }
+
+        if (previewIdCompatibility != null && previewIdCompatibility.matchedCount == 0) {
+            JOptionPane.showMessageDialog(this,
+                "No IDs in the expression file match the current genome.\nImport has been disabled.",
+                "No Matching IDs", JOptionPane.ERROR_MESSAGE);
+            return;
+        }
         
         String experimentName = experimentNameField.getText().trim();
         if (experimentName.isEmpty()) {
@@ -455,35 +483,48 @@ public class SimpleExpressionImportDialog extends JDialog {
         revalidate();
         repaint();
         
+        final String notesSnapshot = notesArea.getText();
+        final DataType selectedDataType = (DataType) dataTypeCombo.getSelectedItem();
+        final File selectedSourceFile = new File(filePathField.getText());
+
         // Perform import in background
         HubWorker<Boolean, String> importWorker = new HubWorker<Boolean, String>() {
             @Override
             protected Boolean doInBackground() throws Exception {
+                importFailureMessage = null;
                 publish("Creating experiment...");
-                progressBar.setValue(10);
+                setProgress(10);
                 
                 // Create simplified experiment
-                String experimentId = "EXP_" + System.currentTimeMillis();
+                String experimentId = "EXP_" + System.currentTimeMillis() + "_" + java.util.UUID.randomUUID().toString().substring(0, 8);
                 currentExperiment = new ExpressionExperiment(experimentId, experimentName);
-                currentExperiment.setDescription(notesArea.getText());
+                currentExperiment.setDescription(notesSnapshot);
                 currentExperiment.setExperimentType(ExpressionExperiment.ExperimentType.BULK_RNA);
                 
-                progressBar.setValue(30);
+                setProgress(30);
                 
                 // Create final expression matrix
                 publish("Processing expression matrix...");
                 String finalMatrixId = experimentId + "_matrix";
-                DataType dataType = (DataType) dataTypeCombo.getSelectedItem();
+                DataType dataType = selectedDataType;
                 ExpressionMatrix finalMatrix = new ExpressionMatrix(finalMatrixId, experimentName, dataType);
                 
-                File sourceFile = new File(filePathField.getText());
+                File sourceFile = selectedSourceFile;
                 if (!finalMatrix.loadFromFile(sourceFile)) {
+                    importFailureMessage = "Failed to import expression data. Please check the file format.";
+                    return false;
+                }
+
+                ExpressionIdCompatibilityResult finalCompatibility = validateExpressionIdsAgainstSpecies(finalMatrix);
+                if (finalCompatibility.matchedCount == 0) {
+                    importFailureMessage = "No IDs in the expression file match the current genome.\nImport was cancelled.";
                     return false;
                 }
                 
-                progressBar.setValue(60);
+                setProgress(60);
                 
                 // Add matrix to experiment
+                currentExperiment.setStoredDataType(dataType);
                 currentExperiment.addMatrix(finalMatrix);
                 
                 // Save to species directory
@@ -493,22 +534,29 @@ public class SimpleExpressionImportDialog extends JDialog {
                     expressionDir.mkdirs();
                 }
                 
-                // Save metadata
                 File metadataFile = new File(expressionDir, experimentId + ".metadata.json");
-                if (!currentExperiment.saveMetadata(metadataFile))
-                    throw new java.io.IOException("Failed to save expression metadata: " + metadataFile);
-                
-                progressBar.setValue(80);
-                
-                // Copy matrix file
                 File targetMatrixFile = new File(expressionDir, experimentId + ".matrix.tsv");
-                if (!finalMatrix.saveToFile(targetMatrixFile))
-                    throw new java.io.IOException("Failed to save expression matrix: " + targetMatrixFile);
-                
-                // Add to species
+                java.nio.file.Path stagedMetadata = simplegenomehub.util.fileio.FileSetTransaction.stageSibling(metadataFile.toPath());
+                java.nio.file.Path stagedMatrix = null;
+                try {
+                    if (!currentExperiment.saveMetadata(stagedMetadata.toFile()))
+                        throw new java.io.IOException("Failed to save expression metadata: " + metadataFile);
+                    setProgress(80);
+                    stagedMatrix = simplegenomehub.util.fileio.FileSetTransaction.stageSibling(targetMatrixFile.toPath());
+                    if (!finalMatrix.saveToFile(stagedMatrix.toFile()))
+                        throw new java.io.IOException("Failed to save expression matrix: " + targetMatrixFile);
+                    java.util.Map<java.nio.file.Path, java.nio.file.Path> publication = new java.util.LinkedHashMap<>();
+                    publication.put(stagedMetadata, metadataFile.toPath());
+                    publication.put(stagedMatrix, targetMatrixFile.toPath());
+                    simplegenomehub.util.fileio.FileSetTransaction.commit(publication, java.util.Collections.emptyList(), publication.values());
+                } finally {
+                    simplegenomehub.util.fileio.FileSetTransaction.discardStage(stagedMetadata);
+                    if (stagedMatrix != null) simplegenomehub.util.fileio.FileSetTransaction.discardStage(stagedMatrix);
+                }
+                currentExperiment.setMetadataFile(metadataFile);
                 targetSpecies.addExpressionExperiment(currentExperiment);
                 
-                progressBar.setValue(100);
+                setProgress(100);
                 publish("Import completed successfully!");
                 
                 // Show summary
@@ -523,7 +571,6 @@ public class SimpleExpressionImportDialog extends JDialog {
                 
                 postToEdt(() -> { if (isPresentationCurrent()) summaryArea.setText(summary.toString()); });
                 
-                Thread.sleep(1000);
                 importSuccessful = true;
                 return true;
             }
@@ -549,7 +596,7 @@ public class SimpleExpressionImportDialog extends JDialog {
                             dispose();
                         } else {
                             JOptionPane.showMessageDialog(SimpleExpressionImportDialog.this,
-                                "Failed to import expression data. Please check the file format.",
+                                importFailureMessage != null ? importFailureMessage : "Failed to import expression data. Please check the file format.",
                                 "Import Failed", JOptionPane.ERROR_MESSAGE);
                             progressBar.setString("Import failed");
 
@@ -557,7 +604,7 @@ public class SimpleExpressionImportDialog extends JDialog {
                     } catch (Exception e) {
                         logger.warning("Import error: " + e.getMessage());
                         JOptionPane.showMessageDialog(SimpleExpressionImportDialog.this,
-                            "Import error: " + e.getMessage(),
+                            "Import error: " + (e.getCause() != null ? e.getCause().getMessage() : e.getMessage()),
                             "Import Error", JOptionPane.ERROR_MESSAGE);
                         progressBar.setString("Import error");
 
@@ -570,6 +617,9 @@ public class SimpleExpressionImportDialog extends JDialog {
             }
         };
         
+        importWorker.addPropertyChangeListener(event -> {
+            if ("progress".equals(event.getPropertyName())) progressBar.setValue((Integer) event.getNewValue());
+        });
         simplegenomehub.runtime.HubSession.execute(this, importWorker);
     }
     
@@ -597,6 +647,86 @@ public class SimpleExpressionImportDialog extends JDialog {
         return text.replace("&", "&amp;")
             .replace("<", "&lt;")
             .replace(">", "&gt;");
+    }
+
+    private ExpressionIdCompatibilityResult validateExpressionIdsAgainstSpecies(ExpressionMatrix matrix) {
+        ExpressionIdCompatibilityResult result = new ExpressionIdCompatibilityResult();
+        if (matrix == null || matrix.getGeneIds() == null || matrix.getGeneIds().length == 0) {
+            return result;
+        }
+
+        SpeciesSequenceIndex sequenceIndex = new SpeciesSequenceIndex(targetSpecies);
+        Set<String> knownSequenceIds = sequenceIndex.getAllSequenceIds();
+        Set<String> knownGeneIds = sequenceIndex.getAllGeneIds();
+        Set<String> normalizedKnownIds = new HashSet<>();
+
+        for (String knownId : knownSequenceIds) {
+            normalizedKnownIds.add(normalizeExpressionId(knownId));
+        }
+        for (String knownId : knownGeneIds) {
+            normalizedKnownIds.add(normalizeExpressionId(knownId));
+        }
+
+        LinkedHashSet<String> unmatchedPreviewIds = new LinkedHashSet<>();
+        for (String rawId : matrix.getGeneIds()) {
+            String geneId = rawId == null ? "" : rawId.trim();
+            if (geneId.isEmpty()) {
+                result.unmatchedCount++;
+                if (unmatchedPreviewIds.size() < 5) {
+                    unmatchedPreviewIds.add("(empty ID)");
+                }
+                continue;
+            }
+
+            boolean matched = knownSequenceIds.contains(geneId)
+                || knownGeneIds.contains(geneId)
+                || normalizedKnownIds.contains(normalizeExpressionId(geneId));
+
+            if (matched) {
+                result.matchedCount++;
+            } else {
+                result.unmatchedCount++;
+                if (unmatchedPreviewIds.size() < 5) {
+                    unmatchedPreviewIds.add(geneId);
+                }
+            }
+        }
+
+        result.firstUnmatchedIds.addAll(unmatchedPreviewIds);
+        return result;
+    }
+
+    private String normalizeExpressionId(String id) {
+        if (id == null) {
+            return "";
+        }
+
+        String normalized = id.trim().toUpperCase(Locale.ROOT);
+        normalized = normalized.replaceAll("\\.T\\d+$", "");
+        normalized = normalized.replaceAll("\\.\\d+$", "");
+        normalized = normalized.replaceAll("_T\\d+$", "");
+        normalized = normalized.replaceAll("_TRANSCRIPT_\\d+$", "");
+        return normalized;
+    }
+
+    private String buildUnmatchedIdWarningMessage(ExpressionIdCompatibilityResult compatibility) {
+        StringBuilder message = new StringBuilder();
+        message.append("Some IDs in the expression file do not match the current genome.\n");
+        message.append("First unmatched IDs:\n");
+        for (String unmatchedId : compatibility.firstUnmatchedIds) {
+            message.append("- ").append(unmatchedId).append("\n");
+        }
+        return message.toString().trim();
+    }
+
+    private static final class ExpressionIdCompatibilityResult {
+        private int matchedCount;
+        private int unmatchedCount;
+        private final List<String> firstUnmatchedIds = new ArrayList<>(5);
+
+        private boolean hasUnmatchedIds() {
+            return unmatchedCount > 0;
+        }
     }
     
     /**

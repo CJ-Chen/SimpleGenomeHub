@@ -8,6 +8,8 @@ import simplegenomehub.model.*;
 import javax.swing.*;
 import java.awt.*;
 import java.io.File;
+import simplegenomehub.config.ApplicationLayout;
+import simplegenomehub.util.RuntimeLogManager;
 import java.io.IOException;
 import java.util.concurrent.CompletionStage;
 import simplegenomehub.runtime.HubHostContext;
@@ -48,6 +50,7 @@ public class SimpleGenomeHubMainPanel extends JPanel implements SpeciesManager.S
             throw new biocjava.GUIexcutors.ToolOpenException("Cannot open Simple Genome Hub: " + failure.getMessage(), failure);
         }
         HubSession.attach(this, session);
+        RuntimeLogManager.attach(session);
         try {
             initializeComponents();
             setupLayout();
@@ -214,6 +217,13 @@ public class SimpleGenomeHubMainPanel extends JPanel implements SpeciesManager.S
 
         JPanel rightPanel = new JPanel(new FlowLayout(FlowLayout.RIGHT, 10, 0));
         rightPanel.setOpaque(false);
+        JButton logButton = new JButton("Runtime Log");
+        logButton.setToolTipText("View the current Hub session log");
+        logButton.addActionListener(event -> {
+            RuntimeLogDialog dialog = new RuntimeLogDialog(SwingUtilities.getWindowAncestor(this), session);
+            dialog.setVisible(true);
+        });
+        rightPanel.add(logButton);
         rightPanel.add(dataDirLabel);
         rightPanel.add(SimpleGenomeHubFontManager.createScaleControl());
         statusPanel.add(rightPanel, BorderLayout.EAST);
@@ -401,6 +411,7 @@ public class SimpleGenomeHubMainPanel extends JPanel implements SpeciesManager.S
     }
     
     public static void main(String[] args) {
+        RuntimeLogManager.initialize();
         SwingUtilities.invokeLater(() -> {
             // Use default Swing look and feel
             
@@ -429,8 +440,8 @@ public class SimpleGenomeHubMainPanel extends JPanel implements SpeciesManager.S
             
             // Set window icon (if available)
             try {
-                // You could add an icon here
-                // frame.setIconImage(Toolkit.getDefaultToolkit().getImage("icon.png"));
+                File iconFile = ApplicationLayout.findFirstExistingAppFile("assets/icons/app.png");
+                if (iconFile != null) frame.setIconImage(new ImageIcon(iconFile.getAbsolutePath()).getImage());
             } catch (Exception e) {
                 // Ignore icon loading errors
             }

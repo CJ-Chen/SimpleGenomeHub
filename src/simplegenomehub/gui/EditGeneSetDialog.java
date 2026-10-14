@@ -3,13 +3,18 @@ package simplegenomehub.gui;
 import simplegenomehub.runtime.HubWorker;
 
 import simplegenomehub.model.SpeciesInfo;
+import simplegenomehub.util.fileio.GeneSetSupport;
+import simplegenomehub.util.fileio.SetNoteSupport;
 
 import javax.swing.*;
 import javax.swing.event.DocumentEvent;
 import javax.swing.event.DocumentListener;
 import java.awt.*;
 import java.io.File;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.logging.Logger;
 
 final class EditGeneSetDialog extends JDialog {
@@ -22,7 +27,9 @@ final class EditGeneSetDialog extends JDialog {
     private final JTextField geneSetNameField;
     private final JTextArea geneIdsArea;
     private final JButton saveButton;
+    private final JButton noteButton;
     private volatile boolean geneSetUpdated;
+    private Map<String, SetNoteSupport.Note> pendingNotes = new LinkedHashMap<>();
 
     EditGeneSetDialog(Window parent, SpeciesInfo species, File geneSetFile, Runnable onUpdateSuccess) {
         super(parent, "Edit Gene Set", ModalityType.MODELESS);
@@ -34,11 +41,13 @@ final class EditGeneSetDialog extends JDialog {
         this.geneSetNameField = new JTextField();
         this.geneIdsArea = new JTextArea(14, 48);
         this.saveButton = new JButton("Save");
+        this.noteButton = new JButton("Note");
 
         initializeComponents();
         setupLayout();
         setupEventHandlers();
         loadExistingContent();
+        pendingNotes = new LinkedHashMap<>(SetNoteSupport.read(geneSetFile));
 
         setDefaultCloseOperation(DISPOSE_ON_CLOSE);
         setSize(640, 520);
@@ -63,6 +72,13 @@ final class EditGeneSetDialog extends JDialog {
         saveButton.setForeground(SimpleGenomeHubStyle.DIALOG_PRIMARY_BUTTON_TEXT);
         saveButton.setFocusPainted(false);
         saveButton.setPreferredSize(new Dimension(120, 38));
+
+        noteButton.setEnabled(false);
+        noteButton.setBackground(SimpleGenomeHubStyle.DIALOG_SECONDARY_BUTTON);
+        noteButton.setForeground(SimpleGenomeHubStyle.DIALOG_SECONDARY_BUTTON_TEXT);
+        noteButton.setFocusPainted(false);
+        noteButton.setPreferredSize(new Dimension(120, 38));
+        noteButton.setToolTipText("Edit the note and the card colour of each ID");
     }
 
     private void setupLayout() {
@@ -89,8 +105,9 @@ final class EditGeneSetDialog extends JDialog {
         geneIdPanel.add(new JScrollPane(geneIdsArea), BorderLayout.CENTER);
         formPanel.add(geneIdPanel, BorderLayout.CENTER);
 
-        JPanel actionPanel = new JPanel(new FlowLayout(FlowLayout.CENTER, 0, 0));
+        JPanel actionPanel = new JPanel(new FlowLayout(FlowLayout.CENTER, 10, 0));
         actionPanel.setOpaque(false);
+        actionPanel.add(noteButton);
         actionPanel.add(saveButton);
 
         root.add(formPanel, BorderLayout.CENTER);
@@ -119,6 +136,7 @@ final class EditGeneSetDialog extends JDialog {
         geneSetNameField.getDocument().addDocumentListener(updateListener);
         geneIdsArea.getDocument().addDocumentListener(updateListener);
         saveButton.addActionListener(e -> saveGeneSet());
+        noteButton.addActionListener(e -> editNotes());
     }
 
     private void loadExistingContent() {
@@ -130,7 +148,9 @@ final class EditGeneSetDialog extends JDialog {
         geneSetNameField.setText(GeneSetFileSupport.extractDisplayName(fileName));
 
         try {
-            geneIdsArea.setText(GeneSetFileSupport.readGeneSetContent(originalFile));
+            // IDs only: coordinates are re-resolved on save, so the editor stays clean
+            geneIdsArea.setText(GeneSetFileSupport.formatGeneIds(
+                GeneSetFileSupport.parseGeneIds(GeneSetFileSupport.readGeneSetContent(originalFile))));
             geneIdsArea.setCaretPosition(0);
         } catch (Exception ex) {
             logger.warning("Failed to read gene set file: " + ex.getMessage());
@@ -147,6 +167,30 @@ final class EditGeneSetDialog extends JDialog {
         boolean hasName = !geneSetNameField.getText().trim().isEmpty();
         boolean hasGeneIds = !geneIdsArea.getText().trim().isEmpty();
         saveButton.setEnabled(hasName && hasGeneIds);
+        noteButton.setEnabled(hasGeneIds);
+    }
+
+    /** Opens the note editor for the ids currently typed; no id is validated here. */
+    private void editNotes() {
+        List<String> geneIds = GeneSetFileSupport.parseGeneIds(geneIdsArea.getText());
+        if (geneIds.isEmpty()) {
+            JOptionPane.showMessageDialog(this,
+                "Enter at least one ID first.",
+                "No IDs",
+                JOptionPane.INFORMATION_MESSAGE);
+            return;
+        }
+
+        String geneSetName = geneSetNameField.getText().trim();
+        Map<String, SetNoteSupport.Note> editedNotes = SetNoteUiSupport.editNotes(
+            this,
+            "Notes - " + (geneSetName.isEmpty() ? "Gene Set" : geneSetName),
+            geneIds,
+            pendingNotes
+        );
+        if (editedNotes != null) {
+            pendingNotes = editedNotes;
+        }
     }
 
     private void saveGeneSet() {
@@ -184,6 +228,7 @@ final class EditGeneSetDialog extends JDialog {
             return;
         }
 
+        final Map<String, SetNoteSupport.Note> notesSnapshot = new LinkedHashMap<>(pendingNotes);
         setControlsEnabled(false);
 
         HubWorker<GeneSetGeneIdValidationSupport.ValidationResult, Void> worker =
@@ -194,10 +239,8 @@ final class EditGeneSetDialog extends JDialog {
                     GeneSetGeneIdValidationSupport.validateGeneIds(species, geneIds);
                 if (validationResult.getMissingGeneIds().isEmpty()) {
                     if (isCancelled()) throw new java.util.concurrent.CancellationException();
-                    GeneSetFileSupport.writeGeneSetFile(targetFile, validationResult.getResolvedGeneIds());
-                    if (!targetFile.equals(originalFile) && originalFile.exists() && !originalFile.delete()) {
-                        throw new IllegalStateException("Failed to remove the original gene set file.");
-                    }
+                    GeneSetFileSupport.writeGeneSetAndNotes(targetFile, validationResult.getResolvedEntries(), geneIds,
+                        validationResult.getResolvedIdsByInputId(), notesSnapshot, originalFile);
                     geneSetUpdated = true;
                 }
                 return validationResult;
@@ -230,7 +273,7 @@ final class EditGeneSetDialog extends JDialog {
                             "Save Complete",
                             JOptionPane.INFORMATION_MESSAGE);
                         dispose();
-                        if (onUpdateSuccess != null) {
+                        if (onUpdateSuccess != null && isPresentationCurrent()) {
                             onUpdateSuccess.run();
                         }
                     } catch (Exception ex) {
@@ -255,6 +298,7 @@ final class EditGeneSetDialog extends JDialog {
         saveButton.setEnabled(enabled
             && !geneSetNameField.getText().trim().isEmpty()
             && !geneIdsArea.getText().trim().isEmpty());
+        noteButton.setEnabled(enabled && !geneIdsArea.getText().trim().isEmpty());
     }
 
     boolean isGeneSetUpdated() {

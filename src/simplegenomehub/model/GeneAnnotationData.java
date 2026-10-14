@@ -5,7 +5,6 @@
 package simplegenomehub.model;
 
 import biocjava.bioIO.GeneOntology.EnrichMent.GOTermEnrichment;
-
 import biocjava.bioIO.GeneOntology.EnrichMent.SimpleEnricher;
 import biocjava.bioDoer.GeneOntology.Annotation.GoAnnoPipe;
 import biocjava.bioDoer.Kegg.AdvancedForEnrichment.KeggEnrichment;
@@ -328,6 +327,8 @@ public class GeneAnnotationData {
     private File originalSourceFile;
     private byte[] originalSourceDigest;
     private byte[] originalCustomState;
+    // Distinguish an explicit deletion from annotation types not loaded yet.
+    private final Set<AnnotationType> explicitlyClearedTypes = EnumSet.noneOf(AnnotationType.class);
     
     /**
      * Constructor
@@ -372,19 +373,18 @@ public class GeneAnnotationData {
      * Load GO annotations from file using TBtools GoAnnoPipe
      */
     public boolean loadGOAnnotations(File file) {
-        try {
-            GoAnnoPipe goPipe = new GoAnnoPipe();
-            
-            // Use TBtools BioFileReader for robust file parsing
-            BioFileReader bio = new BioFileReader(file);
+        try (BufferedReader bio = openAnnotationReader(file)) {
+            List<GeneAnnotation> parsed = new ArrayList<>();
             String line;
             int lineNum = 0;
             
             while ((line = bio.readLine()) != null) {
                 lineNum++;
-                if (line.startsWith("#") || line.trim().isEmpty()) continue;
+                if (line.startsWith("\uFEFF")) line = line.substring(1);
+                if (line.trim().startsWith("#") || line.trim().isEmpty()) continue;
                 
-                String[] parts = line.split("\t");
+                String[] parts = line.split("\t", -1);
+                if (isAnnotationHeader(parts)) continue;
                 if (parts.length < 2) continue;  // 只需要至少2列：geneId和goId
                 
                 String geneId = parts[0].trim();
@@ -425,9 +425,9 @@ public class GeneAnnotationData {
                     }
                 }
                 
-                addAnnotation(annotation);
+                parsed.add(annotation);
             }
-            bio.close();
+            for (GeneAnnotation annotation : parsed) addAnnotation(annotation);
             
             updateStatistics();
             logger.info("Loaded GO annotations from: " + file.getName() + 
@@ -444,14 +444,16 @@ public class GeneAnnotationData {
      * Load KEGG annotations from file
      */
     public boolean loadKEGGAnnotations(File file) {
-        try {
-            BioFileReader bio = new BioFileReader(file);
+        try (BufferedReader bio = openAnnotationReader(file)) {
+            List<GeneAnnotation> parsed = new ArrayList<>();
             String line;
             
             while ((line = bio.readLine()) != null) {
-                if (line.startsWith("#") || line.trim().isEmpty()) continue;
+                if (line.startsWith("\uFEFF")) line = line.substring(1);
+                if (line.trim().startsWith("#") || line.trim().isEmpty()) continue;
                 
-                String[] parts = line.split("\t");
+                String[] parts = line.split("\t", -1);
+                if (isAnnotationHeader(parts)) continue;
                 if (parts.length < 2) continue;  // 只需要至少2列：geneId和keggId
                 
                 String geneId = parts[0].trim();
@@ -464,9 +466,9 @@ public class GeneAnnotationData {
                 annotation.setDescription(description.isEmpty() ? term : description);
                 annotation.setEvidence(evidence);
                 
-                addAnnotation(annotation);
+                parsed.add(annotation);
             }
-            bio.close();
+            for (GeneAnnotation annotation : parsed) addAnnotation(annotation);
             
             updateStatistics();
             logger.info("Loaded KEGG annotations from: " + file.getName() + 
@@ -523,7 +525,7 @@ public class GeneAnnotationData {
                     if (line.trim().isEmpty()) continue;
                     String trimmed = line.trim();
                     boolean comment = trimmed.startsWith("#");
-                    String candidate = comment ? trimmed.substring(1).trim() : line;
+                    String candidate = comment ? line.stripLeading().substring(1) : line;
                     String[] parts = candidate.split(java.util.regex.Pattern.quote(delimiter), -1);
                     if (isAnnotationHeader(parts)) {
                         for (int i = 0; i < parts.length; i++) parts[i] = parts[i].trim();
@@ -599,6 +601,7 @@ public class GeneAnnotationData {
         for (Map.Entry<String, List<GeneAnnotation>> entry : parsed.entrySet())
             committed.computeIfAbsent(entry.getKey(), ignored -> new ArrayList<>()).addAll(entry.getValue());
         annotations.put(type, committed);
+        explicitlyClearedTypes.remove(type);
         columnHeaders.put(type, fileHeaders.clone());
         annotationCounts.put(type, committed.values().stream().mapToInt(List::size).sum());
         // Preserve descriptions enriched from GO/KEGG backends for other types.
@@ -617,10 +620,75 @@ public class GeneAnnotationData {
         return true;
     }
 
-    private static boolean isAnnotationHeader(String[] fields) {
+    public static boolean isAnnotationHeader(String[] fields) {
         if (fields.length < 2 || !fields[0].trim().matches("(?i)gene(?:_?id)?")) return false;
         for (int i = 1; i < fields.length; i++) if (!fields[i].trim().isEmpty()) return true;
         return false;
+    }
+
+    /** Read a bounded preview using the same raw UTF-8/native and gzip decoding as imports.
+     * Comments do not consume the data-row limit, so long annotation preambles remain importable.
+     */
+    public static List<String> readAnnotationPreview(File file, int maximumDataLines) throws IOException {
+        if (maximumDataLines < 1) throw new IllegalArgumentException("Preview size must be positive");
+        java.nio.charset.Charset charset = StandardCharsets.UTF_8;
+        while (true) {
+            List<String> lines = new ArrayList<>();
+            int dataLines = 0;
+            int comments = 0;
+            boolean keptHeader = false;
+            try (BufferedReader reader = openAnnotationReader(file, charset)) {
+                String line;
+                boolean first = true;
+                while (dataLines < maximumDataLines && (line = reader.readLine()) != null) {
+                    if (first && line.startsWith("\uFEFF")) line = line.substring(1);
+                    first = false;
+                    if (line.trim().isEmpty() || line.trim().startsWith("#")) {
+                        boolean header = false;
+                        if (line.trim().startsWith("#")) {
+                            String candidate = line.stripLeading().substring(1);
+                            for (String delimiter : new String[]{"\t", ",", ";"})
+                                header |= isAnnotationHeader(candidate.split(java.util.regex.Pattern.quote(delimiter), -1));
+                        }
+                        if (comments++ < 20 || (header && !keptHeader)) lines.add(line);
+                        keptHeader |= header;
+                    } else {
+                        lines.add(line);
+                        dataLines++;
+                    }
+                }
+                return lines;
+            } catch (java.nio.charset.CharacterCodingException badEncoding) {
+                java.nio.charset.Charset legacy = java.nio.charset.Charset.defaultCharset();
+                if (!charset.equals(StandardCharsets.UTF_8) || legacy.equals(StandardCharsets.UTF_8)) throw badEncoding;
+                charset = legacy;
+            }
+        }
+    }
+
+    /** True only after an explicit model clear, not for a lazily unloaded type. */
+    public boolean isAnnotationTypeExplicitlyCleared(AnnotationType type) {
+        return explicitlyClearedTypes.contains(type);
+    }
+
+    /** Open unfiltered annotation text after validating its encoding completely.
+     * This lets table and metadata readers use the same UTF-8/native fallback
+     * without publishing half a parse before a decoding error near the end.
+     */
+    public static BufferedReader openAnnotationReader(File file) throws IOException {
+        java.nio.charset.Charset charset = StandardCharsets.UTF_8;
+        while (true) {
+            try (BufferedReader reader = openAnnotationReader(file, charset)) {
+                char[] buffer = new char[8192];
+                while (reader.read(buffer) != -1) { /* Validate before returning a live reader. */ }
+            } catch (java.nio.charset.CharacterCodingException badEncoding) {
+                java.nio.charset.Charset legacy = java.nio.charset.Charset.defaultCharset();
+                if (!charset.equals(StandardCharsets.UTF_8) || legacy.equals(StandardCharsets.UTF_8)) throw badEncoding;
+                charset = legacy;
+                continue;
+            }
+            return openAnnotationReader(file, charset);
+        }
     }
 
     private static BufferedReader openAnnotationReader(File file, java.nio.charset.Charset charset) throws IOException {
@@ -666,6 +734,7 @@ public class GeneAnnotationData {
         
         Map<String, List<GeneAnnotation>> typeAnnotations = annotations.get(type);
         typeAnnotations.computeIfAbsent(geneId, k -> new ArrayList<>()).add(annotation);
+        explicitlyClearedTypes.remove(type);
         
         // Update term descriptions
         if (annotation.getDescription() != null) {
@@ -693,10 +762,10 @@ public class GeneAnnotationData {
         }
         
         // Find and remove the specific annotation
-        boolean removed = geneAnnotationList.removeIf(ann -> 
-            ann.getAnnotationId().equals(annotation.getAnnotationId()) &&
-            ann.getTerm() != null ? ann.getTerm().equals(annotation.getTerm()) : annotation.getTerm() == null
-        );
+        int previousSize = geneAnnotationList.size();
+        boolean removed = geneAnnotationList.removeIf(ann ->
+            Objects.equals(ann.getAnnotationId(), annotation.getAnnotationId())
+                && Objects.equals(ann.getTerm(), annotation.getTerm()));
         
         if (removed) {
             // If no annotations left for this gene, remove the gene entry
@@ -705,8 +774,10 @@ public class GeneAnnotationData {
             }
             
             // Update count
-            annotationCounts.put(type, annotationCounts.get(type) - 1);
-            
+            annotationCounts.put(type, annotationCounts.get(type) - (previousSize - geneAnnotationList.size()));
+            if (typeAnnotations.isEmpty()) explicitlyClearedTypes.add(type);
+            updateStatistics();
+
             logger.info("Removed annotation: " + geneId + " -> " + annotation.getAnnotationId());
             return true;
         }
@@ -726,6 +797,8 @@ public class GeneAnnotationData {
         if (removed != null && !removed.isEmpty()) {
             // Update count
             annotationCounts.put(type, annotationCounts.get(type) - removed.size());
+            if (typeAnnotations.isEmpty()) explicitlyClearedTypes.add(type);
+            updateStatistics();
             logger.info("Removed " + removed.size() + " annotations for gene: " + geneId + " (type: " + type + ")");
             return true;
         }
@@ -744,6 +817,7 @@ public class GeneAnnotationData {
         
         typeAnnotations.clear();
         annotationCounts.put(type, 0);
+        explicitlyClearedTypes.add(type);
         
         // Clear column headers for this type
         columnHeaders.remove(type);
@@ -771,9 +845,11 @@ public class GeneAnnotationData {
                 int count = removed.size();
                 totalRemoved += count;
                 annotationCounts.put(type, annotationCounts.get(type) - count);
+                if (typeAnnotations.isEmpty()) explicitlyClearedTypes.add(type);
             }
         }
-        
+        updateStatistics();
+
         if (totalRemoved > 0) {
             logger.info("Removed " + totalRemoved + " annotations for gene: " + geneId);
         }
@@ -793,9 +869,10 @@ public class GeneAnnotationData {
         // Clear all annotations of this type
         typeAnnotations.clear();
         annotationCounts.put(type, 0);
+        explicitlyClearedTypes.add(type);
         
         // Update statistics
-        updateStatistics();
+        rebuildStatisticsFromAnnotations();
         
         logger.info("Removed all " + totalRemoved + " annotations of type: " + type.getShortName());
         return totalRemoved;
@@ -811,6 +888,7 @@ public class GeneAnnotationData {
             totalRemoved += annotationCounts.get(type);
             annotations.get(type).clear();
             annotationCounts.put(type, 0);
+            explicitlyClearedTypes.add(type);
         }
         
         // Clear additional data
@@ -818,7 +896,7 @@ public class GeneAnnotationData {
         termHierarchy.clear();
         
         // Update statistics
-        updateStatistics();
+        rebuildStatisticsFromAnnotations();
         
         logger.info("Cleared all " + totalRemoved + " annotations");
         return totalRemoved;
@@ -897,7 +975,7 @@ public class GeneAnnotationData {
         }
         
         // Update statistics
-        updateStatistics();
+        rebuildStatisticsFromAnnotations();
         
         logger.info("Transcript-to-gene conversion completed: " + 
                    "Processed " + totalOriginal + " annotations, " +
@@ -1292,34 +1370,53 @@ public class GeneAnnotationData {
     }
     
     /**
-     * Update annotation statistics
+     * Refresh annotation statistics using incrementally maintained annotation counts.
      */
     private void updateStatistics() {
         Set<String> allGenes = new HashSet<>();
         totalGenes = 0;
-        
-        // Reset all counts to 0
-        for (AnnotationType type : AnnotationType.values()) {
-            annotationCounts.put(type, 0);
-        }
-        
-        // Count annotations for each type
+
         for (AnnotationType type : AnnotationType.values()) {
             Map<String, List<GeneAnnotation>> typeMap = annotations.get(type);
-            int typeCount = 0;
-            
-            for (List<GeneAnnotation> geneAnnotations : typeMap.values()) {
-                typeCount += geneAnnotations.size();
-                allGenes.addAll(typeMap.keySet());
+            if (typeMap == null || typeMap.isEmpty()) {
+                continue;
             }
-            
-            annotationCounts.put(type, typeCount);
-            
+
+            allGenes.addAll(typeMap.keySet());
+            int typeCount = annotationCounts.getOrDefault(type, 0);
             if (typeCount > 0) {
                 logger.info("Updated statistics for " + type.getShortName() + ": " + typeCount + " annotations");
             }
         }
-        
+
+        annotatedGenes = allGenes.size();
+    }
+
+    /**
+     * Fully rebuild annotation statistics from the current in-memory maps.
+     * Use this after bulk structural changes that bypass incremental counters.
+     */
+    private void rebuildStatisticsFromAnnotations() {
+        Set<String> allGenes = new HashSet<>();
+        totalGenes = 0;
+
+        for (AnnotationType type : AnnotationType.values()) {
+            Map<String, List<GeneAnnotation>> typeMap = annotations.get(type);
+            int typeCount = 0;
+
+            if (typeMap != null && !typeMap.isEmpty()) {
+                allGenes.addAll(typeMap.keySet());
+                for (List<GeneAnnotation> geneAnnotations : typeMap.values()) {
+                    typeCount += geneAnnotations.size();
+                }
+            }
+
+            annotationCounts.put(type, typeCount);
+            if (typeCount > 0) {
+                logger.info("Updated statistics for " + type.getShortName() + ": " + typeCount + " annotations");
+            }
+        }
+
         annotatedGenes = allGenes.size();
     }
     
@@ -1327,18 +1424,8 @@ public class GeneAnnotationData {
      * Public method to update statistics (for debugging and final updates)
      */
     public void updateFinalStatistics() {
-        updateStatistics();
+        rebuildStatisticsFromAnnotations();
         logger.info("Final statistics update completed");
-    }
-    
-    private AnnotationType getAnnotationType(Map<String, List<GeneAnnotation>> typeMap) {
-        // Helper to determine annotation type from map
-        for (AnnotationType type : AnnotationType.values()) {
-            if (annotations.get(type) == typeMap) {
-                return type;
-            }
-        }
-        return AnnotationType.CUSTOM;
     }
     
     /**

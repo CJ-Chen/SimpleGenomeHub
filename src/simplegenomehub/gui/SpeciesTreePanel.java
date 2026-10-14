@@ -5,10 +5,16 @@ package simplegenomehub.gui;
 
 import simplegenomehub.util.fileio.AnalysisDirectoryResolver;
 import simplegenomehub.blast.BlastConfig;
+import simplegenomehub.genomebrowser.GenomeBrowserFrame;
 import simplegenomehub.model.SpeciesInfo;
 import simplegenomehub.model.SpeciesManager;
+import simplegenomehub.population.fst.FST1JieMian1;
+import simplegenomehub.population.fst.FSTRunInfo;
+import simplegenomehub.population.fst.PopulationFstViewer;
+import simplegenomehub.population.fst.ResultDirectoryScanner;
 import simplegenomehub.util.fileio.DemoGeneSetGenerator;
 import simplegenomehub.util.fileio.DualSyntenyPlotLauncher;
+import simplegenomehub.util.fileio.SetNoteSupport;
 import javax.swing.*;
 import javax.swing.tree.*;
 import java.awt.*;
@@ -56,9 +62,14 @@ public class SpeciesTreePanel extends JPanel {
 
     public enum SelectionKind {
         NONE,
+        FUNCTIONAL_ANNOTATION,
+        EXPRESSION_FILE,
+        POPULATION_VCF_FILE,
+        POPULATION_FST_RESULT,
         ADVANCE_CIRCOS_RESULT,
         GENOME_COMPARE_RESULT,
-        MULTIPLE_SYNTENY_RESULT
+        MULTIPLE_SYNTENY_RESULT,
+        GENE_SET_FILE
     }
 
     public static final class SelectionContext {
@@ -66,7 +77,8 @@ public class SpeciesTreePanel extends JPanel {
         private final File selectedFile;
         private final SelectionKind selectionKind;
 
-        private SelectionContext(SpeciesInfo species, File selectedFile, SelectionKind selectionKind) {
+        /** Built by the tree for the selected node; package visible so the panels/tests can pass one on. */
+        SelectionContext(SpeciesInfo species, File selectedFile, SelectionKind selectionKind) {
             this.species = species;
             this.selectedFile = selectedFile;
             this.selectionKind = selectionKind == null ? SelectionKind.NONE : selectionKind;
@@ -200,7 +212,7 @@ public class SpeciesTreePanel extends JPanel {
         refreshButton.addActionListener(e -> triggerRefresh());
         editButton.addActionListener(e -> editSelectedSpecies());
         deleteButton.addActionListener(e -> deleteSelectedSpecies());
-        exportButton.addActionListener(e -> exportSelectedSpecies());
+        exportButton.addActionListener(e -> openExportDialog());
 
         panel.add(refreshButton);
         panel.add(editButton);
@@ -447,15 +459,52 @@ public class SpeciesTreePanel extends JPanel {
     }
     
     /**
-     * Export selected species data
+     * Open the export dialog for all available species.
+     * The species currently selected in the tree is used only as the
+     * dialog's initial selection.
      */
-    private void exportSelectedSpecies() {
-        SpeciesInfo selected = getSelectedSpecies();
-        if (selected != null) {
-            ExportDialog dialog = new ExportDialog(SwingUtilities.getWindowAncestor(this), selected);
-            simplegenomehub.runtime.HubSession.attach(dialog, speciesManager.getSession());
-            dialog.setVisible(true);
+    private void openExportDialog() {
+        List<SpeciesInfo> availableSpecies = speciesManager.getAllSpecies();
+        if (availableSpecies.isEmpty()) {
+            JOptionPane.showMessageDialog(this,
+                "There are no species available to export.",
+                "No Species Available",
+                JOptionPane.WARNING_MESSAGE);
+            return;
         }
+
+        SpeciesInfo selected = getSelectedSpecies();
+        ExportDialog dialog = new ExportDialog(
+            SwingUtilities.getWindowAncestor(this),
+            availableSpecies,
+            selected
+        );
+        simplegenomehub.runtime.HubSession.attach(dialog, speciesManager.getSession());
+        dialog.setVisible(true);
+    }
+
+    private void openGenomeBrowser(DefaultMutableTreeNode node) {
+        SpeciesInfo species = getSpeciesFromNode(node);
+        if (species == null) {
+            JOptionPane.showMessageDialog(this,
+                "Unable to resolve the genome unit for the genome browser.",
+                "Genome Browser", JOptionPane.WARNING_MESSAGE);
+            return;
+        }
+        File genome = species.getGenomeFile();
+        if (genome == null || !genome.isFile()) {
+            JOptionPane.showMessageDialog(this,
+                "No genome FASTA file was found for this genome unit.",
+                "Genome Browser", JOptionPane.WARNING_MESSAGE);
+            return;
+        }
+        File annotation = species.getAnnotationFile();
+        if (annotation != null && !annotation.isFile()) {
+            annotation = null;
+        }
+        String title = species.getSpeciesName() + " " + species.getVersion() + " - Genome Browser";
+        GenomeBrowserFrame.open(SwingUtilities.getWindowAncestor(this), genome, annotation, title,
+            species, speciesManager);
     }
 
     private void openSelectedSpeciesDirectory() {
@@ -539,6 +588,18 @@ public class SpeciesTreePanel extends JPanel {
                     openWithDualSyntenyPlotItem.addActionListener(ev -> openWithDualSyntenyPlot(data));
                     contextMenu.add(openWithDualSyntenyPlotItem);
                 }
+                if (data.isFstResultFolder()) {
+                    JMenuItem openFstResultsItem = new JMenuItem("Open FST Results");
+                    openFstResultsItem.addActionListener(ev -> openFstResults(data));
+                    contextMenu.add(openFstResultsItem);
+                }
+                if (isFstRunNode(node, data, getSpeciesFromNode(node))) {
+                    JMenuItem openStrategyItem = new JMenuItem("Open Comparison Strategy");
+                    openStrategyItem.setToolTipText(
+                        "Re-open this run's groups and comparison strategy, then append new comparisons");
+                    openStrategyItem.addActionListener(ev -> openFstComparisonStrategy(node, data));
+                    contextMenu.add(openStrategyItem);
+                }
                 JMenuItem deleteItem = new JMenuItem(data.isDirectory() ? "Delete Folder" : "Delete File");
                 openDirectoryItem.addActionListener(ev -> openTreeNodeDirectory(data));
                 if (contextMenu.getComponentCount() > 0) {
@@ -577,17 +638,24 @@ public class SpeciesTreePanel extends JPanel {
                 JMenuItem openDirectoryItem = new JMenuItem("Open Directory");
                 JMenuItem viewStatsItem = new JMenuItem("View Statistics");
                 JMenuItem demoGeneSetItem = new JMenuItem("Random Gene Set");
+                JMenuItem genomeBrowserItem = new JMenuItem("Browse Genome");
                 
                 editItem.addActionListener(ev -> editSelectedSpecies());
                 deleteItem.addActionListener(ev -> deleteSelectedSpecies());
-                exportItem.addActionListener(ev -> exportSelectedSpecies());
+                exportItem.addActionListener(ev -> openExportDialog());
                 openDirectoryItem.addActionListener(ev -> openSelectedSpeciesDirectory());
                 viewStatsItem.addActionListener(ev -> viewSpeciesStatistics());
                 demoGeneSetItem.addActionListener(ev -> generateRandomGeneSetForNode(node));
+                genomeBrowserItem.addActionListener(ev -> openGenomeBrowser(node));
+                SpeciesInfo browserSpecies = getSpeciesFromNode(node);
+                File browserGenomeFile = browserSpecies == null ? null : browserSpecies.getGenomeFile();
+                genomeBrowserItem.setEnabled(browserGenomeFile != null && browserGenomeFile.isFile());
+                genomeBrowserItem.setToolTipText("Open this genome in the standalone genome browser");
                 
                 contextMenu.add(editItem);
                 contextMenu.add(deleteItem);
                 contextMenu.addSeparator();
+                contextMenu.add(genomeBrowserItem);
                 contextMenu.add(demoGeneSetItem);
                 contextMenu.add(exportItem);
                 contextMenu.add(openDirectoryItem);
@@ -793,8 +861,140 @@ public class SpeciesTreePanel extends JPanel {
         }
     }
 
-    private void openWithMultipleSyntenyViewer(TreeFileNodeData data) {
+    /** Opens the ported FST chart window for an existing run folder. */
+    private void openFstResults(TreeFileNodeData data) {
         if (data == null || data.getFile() == null) {
+            return;
+        }
+        SpeciesInfo species = getSelectedSpecies();
+        if (species == null) {
+            JOptionPane.showMessageDialog(this,
+                "Unable to resolve the genome unit for this FST run.",
+                "Genome Not Found", JOptionPane.WARNING_MESSAGE);
+            return;
+        }
+        try {
+            PopulationFstViewer.openResultWindow(this, species, data.getFile(), false);
+        } catch (Exception ex) {
+            showDetailedErrorDialog(
+                "FST Results Error",
+                "Failed to open the FST result window.",
+                ex
+            );
+        }
+    }
+
+    /**
+     * True for a run folder ({@code <timestamp>}) under Population/FST, or one of its
+     * {@code w<window>_s<step>} result folders: the nodes that carry a comparison strategy.
+     */
+    private boolean isFstRunNode(DefaultMutableTreeNode node, TreeFileNodeData data, SpeciesInfo species) {
+        if (data == null || species == null || !data.isDirectory() || data.getFile() == null) {
+            return false;
+        }
+        if (data.isFstResultFolder()) {
+            return true;
+        }
+        File fstRoot = species.getPopulationFstDir();
+        File parent = data.getFile().getParentFile();
+        return fstRoot != null && parent != null && parent.equals(fstRoot);
+    }
+
+    /**
+     * The result folders of the selected run that hold a {@code run.info.txt}. A
+     * {@code w<window>_s<step>} node resolves to itself; a {@code <timestamp>} run folder
+     * resolves to those of its sub-folders that carry the file.
+     */
+    private List<File> resolveFstStrategyFolders(TreeFileNodeData data) {
+        List<File> folders = new ArrayList<>();
+        if (data == null || data.getFile() == null) {
+            return folders;
+        }
+
+        File selected = data.getFile();
+        if (FSTRunInfo.exists(selected)) {
+            folders.add(selected);
+            return folders;
+        }
+
+        if (selected.isDirectory()) {
+            File[] children = selected.listFiles(File::isDirectory);
+            if (children != null) {
+                Arrays.sort(children, Comparator.comparing(File::getName, String.CASE_INSENSITIVE_ORDER));
+                for (File child : children) {
+                    if (FSTRunInfo.exists(child)) {
+                        folders.add(child);
+                    }
+                }
+            }
+        }
+        return folders;
+    }
+
+    /** Re-opens the comparison strategy of an existing FST run (load mode of {@link FST1JieMian1}). */
+    private void openFstComparisonStrategy(DefaultMutableTreeNode node, TreeFileNodeData data) {
+        SpeciesInfo species = getSpeciesFromNode(node);
+        if (species == null) {
+            JOptionPane.showMessageDialog(this,
+                "Unable to resolve the genome unit for this FST run.",
+                "Open Comparison Strategy", JOptionPane.WARNING_MESSAGE);
+            return;
+        }
+
+        List<File> folders = resolveFstStrategyFolders(data);
+        if (folders.isEmpty()) {
+            JOptionPane.showMessageDialog(this,
+                "No comparison strategy (run.info.txt) was found for this FST result.",
+                "Open Comparison Strategy", JOptionPane.INFORMATION_MESSAGE);
+            return;
+        }
+
+        File target = folders.size() == 1 ? folders.get(0) : chooseFstStrategyFolder(folders);
+        if (target == null) {
+            return;
+        }
+
+        FSTRunInfo.Info runInfo = FSTRunInfo.read(target);
+        if (runInfo == null) {
+            JOptionPane.showMessageDialog(this,
+                "Failed to read run.info.txt in:\n" + target.getAbsolutePath(),
+                "Open Comparison Strategy", JOptionPane.ERROR_MESSAGE);
+            return;
+        }
+
+        Window owner = SwingUtilities.getWindowAncestor(this);
+        FST1JieMian1 dialog = new FST1JieMian1(owner, runInfo, target);
+        dialog.setRunSpecies(species);
+        dialog.setRunSpeciesIdentity(species.getSpeciesName(), species.getVersion());
+        dialog.setResultHandler(resultDirectory -> {
+            refreshTree();
+            PopulationFstViewer.openResultWindow(this, species, resultDirectory,
+                dialog.isSortChromosomesByNumber());
+        });
+        dialog.setVisible(true);
+    }
+
+    private File chooseFstStrategyFolder(List<File> folders) {
+        Object[] options = new Object[folders.size()];
+        for (int i = 0; i < folders.size(); i++) {
+            options[i] = folders.get(i).getName();
+        }
+        Object choice = JOptionPane.showInputDialog(this,
+            "Select the result folder to open:",
+            "Open Comparison Strategy",
+            JOptionPane.PLAIN_MESSAGE, null, options, options[0]);
+        if (choice == null) {
+            return null;
+        }
+        for (File folder : folders) {
+            if (folder.getName().equals(choice)) {
+                return folder;
+            }
+        }
+        return null;
+    }
+
+    private void openWithMultipleSyntenyViewer(TreeFileNodeData data) {        if (data == null || data.getFile() == null) {
             return;
         }
 
@@ -903,8 +1103,30 @@ public class SpeciesTreePanel extends JPanel {
         }
 
         Object userObject = node.getUserObject();
+        if (userObject instanceof TreeSectionNodeData) {
+            TreeSectionNodeData data = (TreeSectionNodeData) userObject;
+            if (isUnderFunctionalAnnotationRoot(species, data.getDirectory())) {
+                return new SelectionContext(species, data.getDirectory(), SelectionKind.FUNCTIONAL_ANNOTATION);
+            }
+        }
+
         if (userObject instanceof TreeFileNodeData) {
             TreeFileNodeData data = (TreeFileNodeData) userObject;
+            if (data.isGeneSetFile()) {
+                return new SelectionContext(species, data.getFile(), SelectionKind.GENE_SET_FILE);
+            }
+            if (data.isExpressionFile()) {
+                return new SelectionContext(species, data.getFile(), SelectionKind.EXPRESSION_FILE);
+            }
+            if (data.isPopulationVcfFile()) {
+                return new SelectionContext(species, data.getFile(), SelectionKind.POPULATION_VCF_FILE);
+            }
+            // Population/FST/<run>/w<window>_s<step>/ and the folders above it: the Other Data card
+            // then lists the populations (with all members) and the comparison strategy.
+            if (data.isDirectory()
+                    && (data.isFstResultFolder() || isFstResultSelection(data.getFile()))) {
+                return new SelectionContext(species, data.getFile(), SelectionKind.POPULATION_FST_RESULT);
+            }
             if (data.isDirectory() && data.isAdvanceCircosProject()) {
                 return new SelectionContext(species, data.getFile(), SelectionKind.ADVANCE_CIRCOS_RESULT);
             }
@@ -914,16 +1136,111 @@ public class SpeciesTreePanel extends JPanel {
             if (data.isDirectory() && data.isMultipleSyntenyProject()) {
                 return new SelectionContext(species, data.getFile(), SelectionKind.MULTIPLE_SYNTENY_RESULT);
             }
+            if (isUnderFunctionalAnnotationRoot(species, data.getFile())) {
+                return new SelectionContext(species, data.getFile(), SelectionKind.FUNCTIONAL_ANNOTATION);
+            }
         }
 
         return new SelectionContext(species, null, SelectionKind.NONE);
+    }
+
+    /**
+     * True when the selected folder should open the FST result card in Other Data: a
+     * {@code w<window>_s<step>} result folder, or a run / section folder holding result folders.
+     */
+    static boolean isFstResultSelection(File directory) {
+        return directory != null && directory.isDirectory()
+            && PopulationFstSummarySupport.isFstResultTree(directory);
+    }
+
+    private boolean isUnderFunctionalAnnotationRoot(SpeciesInfo species, File path) {
+        if (species == null || path == null) {
+            return false;
+        }
+
+        File functionalRoot = species.getFunctionalAnnotationDir();
+        if (functionalRoot == null) {
+            return false;
+        }
+
+        try {
+            String rootPath = functionalRoot.getCanonicalPath();
+            String selectedPath = path.getCanonicalPath();
+            return selectedPath.equals(rootPath)
+                || selectedPath.startsWith(rootPath + File.separator);
+        } catch (IOException ex) {
+            String rootPath = functionalRoot.getAbsolutePath();
+            String selectedPath = path.getAbsolutePath();
+            return selectedPath.equals(rootPath)
+                || selectedPath.startsWith(rootPath + File.separator);
+        }
     }
 
     private void addSpeciesChildren(DefaultMutableTreeNode speciesNode, SpeciesInfo species) {
         addFunctionalAnnotationNodes(speciesNode, species);
         addGeneSetNodes(speciesNode, species);
         addExpressionNodes(speciesNode, species);
+        addPopulationNodes(speciesNode, species);
         addGenomeAnalysisNodes(speciesNode, species);
+    }
+
+    /**
+     * Shows the Population section: imported VCF datasets and, once present, FST results.
+     */
+    private void addPopulationNodes(DefaultMutableTreeNode speciesNode, SpeciesInfo species) {
+        File vcfDirectory = species != null ? species.getPopulationVcfDir() : null;
+        File fstDirectory = species != null ? species.getPopulationFstDir() : null;
+        File[] vcfFiles = species != null ? species.listPopulationVcfFiles() : new File[0];
+        boolean hasFstFiles = fstDirectory != null && fstDirectory.isDirectory() && containsAnyFile(fstDirectory);
+        if ((vcfFiles.length == 0 && !hasFstFiles) || vcfDirectory == null) {
+            return;
+        }
+
+        DefaultMutableTreeNode populationNode = new DefaultMutableTreeNode(
+            new TreeSectionNodeData("Population", species.getPopulationDir()));
+
+        DefaultMutableTreeNode vcfNode = new DefaultMutableTreeNode(TreeFileNodeData.forPlainFolder(vcfDirectory));
+        for (File vcfFile : vcfFiles) {
+            vcfNode.add(new DefaultMutableTreeNode(TreeFileNodeData.forPopulationVcfFile(vcfFile)));
+        }
+        populationNode.add(vcfNode);
+
+        if (hasFstFiles) {
+            // Population/FST/<run time>/w<window>_s<step>/ so earlier runs can be reopened.
+            DefaultMutableTreeNode fstNode = new DefaultMutableTreeNode(TreeFileNodeData.forPlainFolder(fstDirectory));
+            for (File runDirectory : listSubDirectories(fstDirectory)) {
+                DefaultMutableTreeNode runNode =
+                    new DefaultMutableTreeNode(TreeFileNodeData.forPlainFolder(runDirectory));
+                for (File parameterDirectory : listSubDirectories(runDirectory)) {
+                    if (ResultDirectoryScanner.scanDirectory(parameterDirectory.getAbsolutePath()).isEmpty()) {
+                        continue;
+                    }
+                    runNode.add(new DefaultMutableTreeNode(
+                        TreeFileNodeData.forFstResultFolder(parameterDirectory)));
+                }
+                if (runNode.getChildCount() > 0) {
+                    fstNode.add(runNode);
+                }
+            }
+            if (fstNode.getChildCount() > 0) {
+                populationNode.add(fstNode);
+            }
+        }
+
+        speciesNode.add(populationNode);
+    }
+
+    /** Sorted sub-directories of a folder; empty when it is missing or has none. */
+    private static File[] listSubDirectories(File directory) {
+        if (directory == null || !directory.isDirectory()) {
+            return new File[0];
+        }
+        File[] children = directory.listFiles(File::isDirectory);
+        if (children == null || children.length == 0) {
+            return new File[0];
+        }
+        Arrays.sort(children, Comparator.comparing(File::getName, String.CASE_INSENSITIVE_ORDER));
+        return children;
     }
 
     private void addExpressionNodes(DefaultMutableTreeNode speciesNode, SpeciesInfo species) {
@@ -933,7 +1250,8 @@ public class SpeciesTreePanel extends JPanel {
         }
 
         File[] tsvFiles = expressionDir.listFiles((dir, name) ->
-            name.toLowerCase(Locale.ROOT).endsWith(".tsv"));
+            name.toLowerCase(Locale.ROOT).endsWith(".tsv")
+                && simplegenomehub.util.fileio.FileSetTransaction.isPublished(new File(dir, name).toPath()));
         if (tsvFiles == null || tsvFiles.length == 0) {
             return;
         }
@@ -954,7 +1272,8 @@ public class SpeciesTreePanel extends JPanel {
         }
 
         File[] geneSetFiles = geneSetDir.listFiles((dir, name) ->
-            GeneSetFileSupport.isStandardSetFileName(name));
+            GeneSetFileSupport.isStandardSetFileName(name)
+                && simplegenomehub.util.fileio.FileSetTransaction.isPublished(new File(dir, name).toPath()));
         if (geneSetFiles == null || geneSetFiles.length == 0) {
             return;
         }
@@ -1148,6 +1467,10 @@ public class SpeciesTreePanel extends JPanel {
         }
 
         boolean success = deleteFileSystemPath(file);
+        if (success && GeneSetFileSupport.isStandardSetFileName(file.getName())) {
+            // The set file owns its notes sidecar, which would otherwise be left behind.
+            SetNoteSupport.delete(file);
+        }
         if (!success) {
             JOptionPane.showMessageDialog(this,
                 "Failed to delete the selected " + itemType + ".\nPlease check whether the file is in use.",
@@ -1338,45 +1661,70 @@ public class SpeciesTreePanel extends JPanel {
         private final boolean advanceCircosProject;
         private final boolean genomeCompareProject;
         private final boolean multipleSyntenyProject;
+        private final boolean expressionFile;
         private final boolean geneSetFile;
+        private final boolean populationVcfFile;
+        private final boolean fstResultFolder;
 
         private TreeFileNodeData(File file, boolean directory, String displayText, boolean advanceCircosProject,
                                  boolean genomeCompareProject, boolean multipleSyntenyProject,
-                                 boolean geneSetFile) {
+                                 boolean expressionFile, boolean geneSetFile, boolean populationVcfFile,
+                                 boolean fstResultFolder) {
             this.file = file;
             this.directory = directory;
             this.displayText = displayText;
             this.advanceCircosProject = advanceCircosProject;
             this.genomeCompareProject = genomeCompareProject;
             this.multipleSyntenyProject = multipleSyntenyProject;
+            this.expressionFile = expressionFile;
             this.geneSetFile = geneSetFile;
+            this.populationVcfFile = populationVcfFile;
+            this.fstResultFolder = fstResultFolder;
         }
 
         public static TreeFileNodeData forExpressionFile(File file) {
             String display = file.getName() + "    " + NODE_TIME_FORMAT.format(new Date(file.lastModified()));
-            return new TreeFileNodeData(file, false, display, false, false, false, false);
+            return new TreeFileNodeData(file, false, display, false, false, false, true, false, false, false);
+        }
+
+        public static TreeFileNodeData forPopulationVcfFile(File file) {
+            String display = file.getName() + "    " + NODE_TIME_FORMAT.format(new Date(file.lastModified()));
+            return new TreeFileNodeData(file, false, display, false, false, false, false, false, true, false);
         }
 
         public static TreeFileNodeData forGeneSetFile(File file) {
             String display = GeneSetFileSupport.extractDisplayName(file)
                 + "    " + NODE_TIME_FORMAT.format(new Date(file.lastModified()));
-            return new TreeFileNodeData(file, false, display, false, false, false, true);
+            return new TreeFileNodeData(file, false, display, false, false, false, false, true, false, false);
         }
 
         public static TreeFileNodeData forFunctionalFolder(File directory) {
-            return new TreeFileNodeData(directory, true, directory.getName(), false, false, false, false);
+            return new TreeFileNodeData(directory, true, directory.getName(),
+                false, false, false, false, false, false, false);
         }
 
         public static TreeFileNodeData forDatedFolder(File directory, boolean advanceCircosProject,
                                                        boolean genomeCompareProject,
                                                        boolean multipleSyntenyProject) {
             return new TreeFileNodeData(directory, true, directory.getName(), advanceCircosProject,
-                genomeCompareProject, multipleSyntenyProject, false);
+                genomeCompareProject, multipleSyntenyProject, false, false, false, false);
         }
 
         public static TreeFileNodeData forTimestampedFile(File file) {
             String display = file.getName() + "    " + NODE_TIME_FORMAT.format(new Date(file.lastModified()));
-            return new TreeFileNodeData(file, false, display, false, false, false, false);
+            return new TreeFileNodeData(file, false, display, false, false, false, false, false, false, false);
+        }
+
+        /** Plain folder node used for the Population/VCF and Population/FST sections. */
+        public static TreeFileNodeData forPlainFolder(File directory) {
+            return new TreeFileNodeData(directory, true, directory.getName(),
+                false, false, false, false, false, false, false);
+        }
+
+        /** One {@code w<window>_s<step>} folder holding a finished FST run's result files. */
+        public static TreeFileNodeData forFstResultFolder(File directory) {
+            return new TreeFileNodeData(directory, true, directory.getName(),
+                false, false, false, false, false, false, true);
         }
 
         public File getFile() {
@@ -1403,8 +1751,20 @@ public class SpeciesTreePanel extends JPanel {
             return multipleSyntenyProject;
         }
 
+        public boolean isExpressionFile() {
+            return expressionFile;
+        }
+
         public boolean isGeneSetFile() {
             return geneSetFile;
+        }
+
+        public boolean isPopulationVcfFile() {
+            return populationVcfFile;
+        }
+
+        public boolean isFstResultFolder() {
+            return fstResultFolder;
         }
 
         @Override

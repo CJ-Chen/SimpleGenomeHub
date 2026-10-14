@@ -10,8 +10,6 @@ import simplegenomehub.util.export.DataExporter;
 import javax.swing.*;
 import javax.swing.border.TitledBorder;
 import java.awt.*;
-import java.awt.event.ActionEvent;
-import java.awt.event.ActionListener;
 import java.io.File;
 import java.util.List;
 import java.util.ArrayList;
@@ -24,7 +22,8 @@ import java.util.ArrayList;
  */
 public class ExportDialog extends JDialog {
     
-    private List<SpeciesInfo> selectedSpecies;
+    private final List<SpeciesInfo> availableSpecies;
+    private final SpeciesInfo initiallySelectedSpecies;
     
     // Selection components
     private JList<SpeciesInfo> speciesList;
@@ -54,22 +53,18 @@ public class ExportDialog extends JDialog {
     private JTextArea logArea;
     
     /**
-     * Constructor for single species export
+     * Constructor for an available species list with an optional initial selection.
      */
-    public ExportDialog(Window parent, SpeciesInfo species) {
-        this(parent, java.util.Arrays.asList(species));
-    }
-    
-    /**
-     * Constructor for multiple species export
-     */
-    public ExportDialog(Window parent, List<SpeciesInfo> species) {
+    public ExportDialog(Window parent, List<SpeciesInfo> species, SpeciesInfo initiallySelectedSpecies) {
         super(parent, "Export Species Data", ModalityType.APPLICATION_MODAL);
         simplegenomehub.runtime.HubSession.attach(this, simplegenomehub.runtime.HubSession.forComponent(parent));
         
-        this.selectedSpecies = new ArrayList<>(species);
-        if (!species.isEmpty()) simplegenomehub.runtime.HubSession.attach(this,
-            simplegenomehub.runtime.HubSession.forDataPath(species.get(0).getSpeciesDir()));
+        this.availableSpecies = species == null
+            ? new ArrayList<>()
+            : new ArrayList<>(species);
+        this.initiallySelectedSpecies = initiallySelectedSpecies;
+        if (!this.availableSpecies.isEmpty()) simplegenomehub.runtime.HubSession.attach(this,
+            simplegenomehub.runtime.HubSession.forDataPath(this.availableSpecies.get(0).getSpeciesDir()));
         
         initializeComponents();
         setupLayout();
@@ -77,7 +72,7 @@ public class ExportDialog extends JDialog {
         loadSpeciesList();
         
         setDefaultCloseOperation(DISPOSE_ON_CLOSE);
-        setSize(600, 500);
+        setSize(600, 680);
         setLocationRelativeTo(parent);
     }
     
@@ -128,8 +123,8 @@ public class ExportDialog extends JDialog {
         logArea.setBorder(BorderFactory.createLoweredBevelBorder());
         
         // Set button sizes
-        selectAllButton.setPreferredSize(new Dimension(100, 25));
-        selectNoneButton.setPreferredSize(new Dimension(100, 25));
+        selectAllButton.setPreferredSize(new Dimension(120, 28));
+        selectNoneButton.setPreferredSize(new Dimension(120, 28));
         browseButton.setPreferredSize(new Dimension(80, 25));
         exportButton.setPreferredSize(new Dimension(120, 30));
         cancelButton.setPreferredSize(new Dimension(80, 30));
@@ -170,7 +165,11 @@ public class ExportDialog extends JDialog {
         panel.setBorder(new TitledBorder("Species Selection"));
         
         // Species list
-        JScrollPane listScrollPane = new JScrollPane(speciesList);
+        JScrollPane listScrollPane = new JScrollPane(
+            speciesList,
+            ScrollPaneConstants.VERTICAL_SCROLLBAR_ALWAYS,
+            ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER
+        );
         listScrollPane.setPreferredSize(new Dimension(550, 120));
         panel.add(listScrollPane, BorderLayout.CENTER);
         
@@ -190,15 +189,17 @@ public class ExportDialog extends JDialog {
         JPanel panel = new JPanel(new BorderLayout());
         
         // Format selection
-        JPanel formatPanel = new JPanel();
+        JPanel formatPanel = new JPanel(new BorderLayout(0, 4));
         formatPanel.setBorder(new TitledBorder("Export Format"));
-        formatPanel.setLayout(new BoxLayout(formatPanel, BoxLayout.Y_AXIS));
-        
-        formatPanel.add(archiveRadio);
-        formatPanel.add(fastaOnlyRadio);
-        formatPanel.add(annotationOnlyRadio);
-        formatPanel.add(statisticsRadio);
-        formatPanel.add(reportRadio);
+
+        JPanel formatOptionsPanel = new JPanel(new GridLayout(0, 2, 12, 2));
+        formatOptionsPanel.setBorder(BorderFactory.createEmptyBorder(2, 8, 2, 8));
+        formatOptionsPanel.add(archiveRadio);
+        formatOptionsPanel.add(fastaOnlyRadio);
+        formatOptionsPanel.add(annotationOnlyRadio);
+        formatOptionsPanel.add(statisticsRadio);
+        formatOptionsPanel.add(reportRadio);
+        formatPanel.add(formatOptionsPanel, BorderLayout.NORTH);
         
         // Add format descriptions
         JTextArea descArea = new JTextArea(
@@ -211,7 +212,7 @@ public class ExportDialog extends JDialog {
         descArea.setOpaque(false);
         descArea.setFont(SimpleGenomeHubStyle.plain(descArea.getFont(), 11f));
         descArea.setBorder(BorderFactory.createEmptyBorder(5, 20, 5, 5));
-        formatPanel.add(descArea);
+        formatPanel.add(descArea, BorderLayout.CENTER);
         
         panel.add(formatPanel, BorderLayout.NORTH);
         
@@ -267,7 +268,9 @@ public class ExportDialog extends JDialog {
      */
     private void setupEventHandlers() {
         selectAllButton.addActionListener(e -> {
-            speciesList.setSelectionInterval(0, listModel.getSize() - 1);
+            if (listModel.getSize() > 0) {
+                speciesList.setSelectionInterval(0, listModel.getSize() - 1);
+            }
         });
         
         selectNoneButton.addActionListener(e -> {
@@ -286,13 +289,19 @@ public class ExportDialog extends JDialog {
      */
     private void loadSpeciesList() {
         listModel.clear();
-        for (SpeciesInfo species : selectedSpecies) {
+        for (SpeciesInfo species : availableSpecies) {
             listModel.addElement(species);
         }
         
-        // Select all by default
-        if (!selectedSpecies.isEmpty()) {
-            speciesList.setSelectionInterval(0, selectedSpecies.size() - 1);
+        // Preserve the main tree selection when one exists; otherwise leave
+        // the list unselected so the user can choose the export set.
+        if (initiallySelectedSpecies != null) {
+            for (int i = 0; i < listModel.getSize(); i++) {
+                if (initiallySelectedSpecies.equals(listModel.getElementAt(i))) {
+                    speciesList.setSelectedIndex(i);
+                    break;
+                }
+            }
         }
     }
     

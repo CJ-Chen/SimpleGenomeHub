@@ -78,7 +78,7 @@ public final class DemoGeneSetGenerator {
         }
 
         File outputFile = new File(geneSetDir, buildDemoGeneSetFileName(species));
-        writeGeneSetFile(outputFile, selectedTranscriptIds);
+        writeGeneSetFile(outputFile, species, selectedTranscriptIds);
         logger.info("Generated demo Gene Set: " + outputFile.getAbsolutePath()
             + " (" + selectedTranscriptIds.size() + " representative transcripts)");
         return new Result(outputFile, selectedTranscriptIds.size(), representativeTranscriptByGene.size());
@@ -297,7 +297,8 @@ public final class DemoGeneSetGenerator {
         return null;
     }
 
-    private static void writeGeneSetFile(File outputFile, List<String> transcriptIds) throws IOException {
+    private static void writeGeneSetFile(File outputFile, SpeciesInfo species, List<String> transcriptIds)
+            throws IOException {
         Set<String> uniqueTranscriptIds = new LinkedHashSet<>();
         for (String transcriptId : transcriptIds) {
             if (transcriptId != null && !transcriptId.trim().isEmpty()) {
@@ -305,12 +306,61 @@ public final class DemoGeneSetGenerator {
             }
         }
 
-        try (BufferedWriter writer = new BufferedWriter(
-            new OutputStreamWriter(new FileOutputStream(outputFile), StandardCharsets.UTF_8))) {
-            for (String transcriptId : uniqueTranscriptIds) {
-                writer.write(transcriptId);
-                writer.newLine();
+        List<GeneSetSupport.Entry> entries = resolveEntries(species, uniqueTranscriptIds);
+        GeneSetSupport.writeEntries(outputFile, entries);
+    }
+
+    /**
+     * Adds chromosome/start/end to every id, using the project's annotation reader
+     * ({@link SequenceExtractor}) instead of a second GFF parser.
+     */
+    private static List<GeneSetSupport.Entry> resolveEntries(SpeciesInfo species, Set<String> ids) {
+        Map<String, GeneSetSupport.Entry> byId = new LinkedHashMap<>();
+        File annotationFile = species == null ? null : species.getAnnotationFile();
+        if (annotationFile != null && annotationFile.isFile()) {
+            try {
+                Map<String, List<SequenceExtractor.FeatureInfo>> featuresByType =
+                    SequenceExtractor.parseAnnotationFile(annotationFile);
+                for (List<SequenceExtractor.FeatureInfo> features : featuresByType.values()) {
+                    for (SequenceExtractor.FeatureInfo feature : features) {
+                        index(byId, feature.getTranscriptId(), feature);
+                        index(byId, feature.getGeneId(), feature);
+                        index(byId, feature.getAttribute("ID"), feature);
+                        index(byId, feature.getAttribute("Parent"), feature);
+                    }
+                }
+            } catch (Exception ex) {
+                logger.warning("Could not read annotation for gene set coordinates: " + ex.getMessage());
             }
+        }
+
+        List<GeneSetSupport.Entry> entries = new ArrayList<>();
+        for (String id : ids) {
+            GeneSetSupport.Entry entry = byId.get(id);
+            entries.add(entry != null ? entry : new GeneSetSupport.Entry(id, "", 0, 0, 0));
+        }
+        return entries;
+    }
+
+    /** Records one id, extending an existing entry to the span of all its rows. */
+    private static void index(Map<String, GeneSetSupport.Entry> byId, String rawId,
+                              SequenceExtractor.FeatureInfo feature) {
+        if (rawId == null || rawId.trim().isEmpty()) {
+            return;
+        }
+        for (String id : rawId.split(",")) {
+            String trimmed = id.trim();
+            if (trimmed.isEmpty()) {
+                continue;
+            }
+            GeneSetSupport.Entry existing = byId.get(trimmed);
+            long start = feature.getStart();
+            long end = feature.getEnd();
+            if (existing != null && existing.hasCoordinate()) {
+                start = Math.min(start, existing.getStartPos());
+                end = Math.max(end, existing.getEndPos());
+            }
+            byId.put(trimmed, new GeneSetSupport.Entry(trimmed, feature.getSeqId(), start, end, 0));
         }
     }
 

@@ -1,0 +1,16 @@
+##gff-version 3
+chr1	fixture	gene	1	12	.	+	.	ID=geneA
+chr1	fixture	mRNA	1	12	.	+	.	ID=txAshort;Parent=geneA
+chr1	fixture	exon	1	3	.	+	.	Parent=txAshort
+chr1	fixture	exon	10	12	.	+	.	Parent=txAshort
+chr1	fixture	CDS	1	3	.	+	0	Parent=txAshort
+chr1	fixture	CDS	10	12	.	+	0	Parent=txAshort
+chr1	fixture	mRNA	1	12	.	+	.	ID=txAlong;Parent=geneA
+chr1	fixture	exon	1	9	.	+	.	Parent=txAlong
+chr1	fixture	CDS	1	9	.	+	0	Parent=txAlong
+chr1	fixture	gene	13	24	.	-	.	ID=geneB
+chr1	fixture	mRNA	13	24	.	-	.	ID=txB;Parent=geneB
+chr1	fixture	exon	13	15	.	-	.	Parent=txB
+chr1	fixture	exon	22	24	.	-	.	Parent=txB
+chr1	fixture	CDS	13	15	.	-	0	Parent=txB
+chr1	fixture	CDS	22	24	.	-	0	Parent=txB

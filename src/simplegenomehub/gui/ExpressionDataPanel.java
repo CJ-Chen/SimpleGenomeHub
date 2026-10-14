@@ -42,6 +42,7 @@ public class ExpressionDataPanel extends JDialog {
     private JButton exportButton;
     private JButton browseMatrixButton;
     private JButton filterGenesButton;
+    private JButton dataTypeButton;
     
     /**
      * Constructor
@@ -49,6 +50,7 @@ public class ExpressionDataPanel extends JDialog {
     public ExpressionDataPanel(Window parent, SpeciesInfo species) {
         super(parent, "Expression Data Management - " + species.getSpeciesName(), ModalityType.MODELESS);
         this.targetSpecies = species;
+        simplegenomehub.runtime.HubSession.attach(this, simplegenomehub.runtime.HubSession.forDataPath(species.getSpeciesDir()));
         this.experiments = new ArrayList<>();
         
         loadExpressionExperiments();
@@ -65,117 +67,8 @@ public class ExpressionDataPanel extends JDialog {
      * Load expression experiments from species directory
      */
     private void loadExpressionExperiments() {
-        experiments.clear();
-        File expressionDir = targetSpecies.getExpressionDir();
-        
-        if (expressionDir != null && expressionDir.exists()) {
-            File[] metadataFiles = expressionDir.listFiles((dir, name) -> name.endsWith(".metadata.json"));
-            if (metadataFiles != null) {
-                for (File metadataFile : metadataFiles) {
-                    try {
-                        ExpressionExperiment experiment = ExpressionExperiment.loadMetadata(metadataFile);
-                        if (experiment != null) {
-                            // Load associated matrix data
-                            loadExperimentMatrices(experiment, expressionDir);
-                            experiments.add(experiment);
-                        }
-                    } catch (Exception e) {
-                        logger.warning("Failed to load experiment from " + metadataFile.getName() + ": " + e.getMessage());
-                    }
-                }
-            }
-        }
-        
+        experiments = ExpressionExperimentDisplaySupport.loadExpressionExperiments(targetSpecies);
         logger.info("Loaded " + experiments.size() + " expression experiments");
-    }
-    
-    /**
-     * Load matrix data for an experiment
-     */
-    private void loadExperimentMatrices(ExpressionExperiment experiment, File expressionDir) {
-        String experimentId = experiment.getExperimentId();
-        File matrixFile = new File(expressionDir, experimentId + ".matrix.tsv");
-        
-        if (matrixFile.exists()) {
-            try {
-                // Infer data type from filename or metadata
-                ExpressionMatrix.DataType dataType = inferDataTypeFromFile(matrixFile, experiment);
-                
-                // Create ExpressionMatrix and load data
-                String matrixId = experimentId + "_matrix";
-                ExpressionMatrix matrix = new ExpressionMatrix(matrixId, experiment.getTitle(), dataType);
-                
-                if (matrix.loadFromFile(matrixFile)) {
-                    experiment.addMatrix(matrix);
-                    logger.info("Loaded matrix data for experiment: " + experimentId + 
-                              " (" + matrix.getGeneCount() + " genes, " + matrix.getSampleCount() + " samples)" +
-                              " - Type: " + dataType.getShortName());
-                } else {
-                    logger.warning("Failed to load matrix data from: " + matrixFile.getName());
-                }
-                
-            } catch (Exception e) {
-                logger.warning("Error loading matrix for experiment " + experimentId + ": " + e.getMessage());
-            }
-        } else {
-            logger.warning("Matrix file not found for experiment: " + experimentId);
-        }
-    }
-    
-    /**
-     * Infer data type from file name or experiment metadata
-     */
-    private ExpressionMatrix.DataType inferDataTypeFromFile(File matrixFile, ExpressionExperiment experiment) {
-        String fileName = matrixFile.getName().toLowerCase();
-        String title = experiment.getTitle().toLowerCase();
-        String description = experiment.getDescription() != null ? experiment.getDescription().toLowerCase() : "";
-        
-        // Check filename first
-        if (fileName.contains("tpm")) {
-            return ExpressionMatrix.DataType.TPM;
-        } else if (fileName.contains("fpkm")) {
-            return ExpressionMatrix.DataType.FPKM;
-        } else if (fileName.contains("count") || fileName.contains("raw")) {
-            return ExpressionMatrix.DataType.COUNTS;
-        } else if (fileName.contains("rpkm")) {
-            return ExpressionMatrix.DataType.RPKM;
-        }
-        
-        // Check experiment title and description
-        if (title.contains("tpm") || description.contains("tpm")) {
-            return ExpressionMatrix.DataType.TPM;
-        } else if (title.contains("fpkm") || description.contains("fpkm")) {
-            return ExpressionMatrix.DataType.FPKM;
-        } else if (title.contains("count") || description.contains("count") || 
-                   title.contains("raw") || description.contains("raw")) {
-            return ExpressionMatrix.DataType.COUNTS;
-        } else if (title.contains("rpkm") || description.contains("rpkm")) {
-            return ExpressionMatrix.DataType.RPKM;
-        }
-        
-        // Try to read metadata file for data type information
-        try {
-            File metadataFile = new File(matrixFile.getParent(), experiment.getExperimentId() + ".metadata.json");
-            if (metadataFile.exists()) {
-                String content = new String(java.nio.file.Files.readAllBytes(metadataFile.toPath()), StandardCharsets.UTF_8).toLowerCase();
-                if (content.contains("\"tpm\"") || content.contains("\"datatype\":\"tpm\"")) {
-                    return ExpressionMatrix.DataType.TPM;
-                } else if (content.contains("\"fpkm\"") || content.contains("\"datatype\":\"fpkm\"")) {
-                    return ExpressionMatrix.DataType.FPKM;
-                } else if (content.contains("\"counts\"") || content.contains("\"datatype\":\"counts\"") ||
-                          content.contains("\"raw\"") || content.contains("\"datatype\":\"raw\"")) {
-                    return ExpressionMatrix.DataType.COUNTS;
-                } else if (content.contains("\"rpkm\"") || content.contains("\"datatype\":\"rpkm\"")) {
-                    return ExpressionMatrix.DataType.RPKM;
-                }
-            }
-        } catch (Exception e) {
-            logger.fine("Could not read metadata file for data type inference: " + e.getMessage());
-        }
-        
-        // Default to TPM if no clear indication
-        logger.info("Could not determine data type for " + matrixFile.getName() + ", defaulting to TPM");
-        return ExpressionMatrix.DataType.TPM;
     }
     
     /**
@@ -188,7 +81,7 @@ public class ExpressionDataPanel extends JDialog {
         experimentsTable.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
         experimentsTable.getSelectionModel().addListSelectionListener(e -> {
             if (!e.getValueIsAdjusting()) {
-                updateDetailsArea();
+                refreshDetailsArea();
                 updateButtons();
             }
         });
@@ -208,6 +101,9 @@ public class ExpressionDataPanel extends JDialog {
         detailsArea.setBorder(BorderFactory.createLoweredBevelBorder());
         
         // Action buttons
+        dataTypeButton = new JButton("Set Data Type...");
+        dataTypeButton.setEnabled(false);
+        dataTypeButton.addActionListener(e -> chooseLegacyDataType());
         deleteButton = new JButton("Delete Experiment");
         exportButton = new JButton("Export Data");
         browseMatrixButton = new JButton("Browse Matrix");
@@ -263,6 +159,7 @@ public class ExpressionDataPanel extends JDialog {
         
         // Bottom: Action buttons
         JPanel buttonPanel = new JPanel(new FlowLayout());
+        buttonPanel.add(dataTypeButton);
         buttonPanel.add(browseMatrixButton);
         buttonPanel.add(filterGenesButton);
         buttonPanel.add(Box.createHorizontalStrut(20));
@@ -351,6 +248,9 @@ public class ExpressionDataPanel extends JDialog {
      */
     private void updateButtons() {
         boolean hasSelection = experimentsTable.getSelectedRow() >= 0;
+        int selected = experimentsTable.getSelectedRow();
+        dataTypeButton.setEnabled(hasSelection && selected < experiments.size()
+            && experiments.get(selected).getStoredDataType() == null);
         deleteButton.setEnabled(hasSelection);
         exportButton.setEnabled(hasSelection);
         browseMatrixButton.setEnabled(hasSelection);
@@ -394,7 +294,7 @@ public class ExpressionDataPanel extends JDialog {
                         // Refresh display
                         loadExpressionExperiments();
                         tableModel.fireTableDataChanged();
-                        updateDetailsArea();
+                        refreshDetailsArea();
                         updateButtons();
 
                         // Update table border title
@@ -512,6 +412,50 @@ public class ExpressionDataPanel extends JDialog {
             ExpressionMatrix matrix = matrices.get(0);
             GeneFilterDialog filterDialog = new GeneFilterDialog(this, targetSpecies, matrix);
             filterDialog.setVisible(true);
+        }
+    }
+
+    private void chooseLegacyDataType() {
+        int row = experimentsTable.getSelectedRow();
+        if (row < 0 || row >= experiments.size()) return;
+        final ExpressionExperiment experiment = experiments.get(row);
+        if (experiment.getStoredDataType() != null) return;
+        Object selected = JOptionPane.showInputDialog(this,
+            "This older experiment has no recorded data type.\nChoose the original measurement type; values will not be converted.",
+            "Set Expression Data Type", JOptionPane.QUESTION_MESSAGE, null,
+            ExpressionMatrix.DataType.values(), null);
+        if (!(selected instanceof ExpressionMatrix.DataType)) return;
+        dataTypeButton.setEnabled(false);
+        simplegenomehub.runtime.HubWorker<Void, Void> worker = new simplegenomehub.runtime.HubWorker<Void, Void>() {
+            @Override protected Void doInBackground() throws Exception {
+                experiment.saveExplicitDataType((ExpressionMatrix.DataType) selected);
+                ExpressionExperimentDisplaySupport.loadExperimentMatrices(experiment, targetSpecies.getExpressionDir());
+                return null;
+            }
+            @Override protected void done() {
+                try {
+                    if (!isPresentationCurrent()) return;
+                    get();
+                    tableModel.fireTableDataChanged();
+                    refreshDetailsArea();
+                } catch (Exception failure) {
+                    Throwable cause = failure.getCause() == null ? failure : failure.getCause();
+                    JOptionPane.showMessageDialog(ExpressionDataPanel.this, cause.getMessage(),
+                        "Unable to Save Data Type", JOptionPane.ERROR_MESSAGE);
+                } finally { updateButtons(); }
+            }
+        };
+        simplegenomehub.runtime.HubSession.execute(this, worker);
+    }
+
+    private void refreshDetailsArea() {
+        int selectedRow = experimentsTable.getSelectedRow();
+        if (selectedRow >= 0 && selectedRow < experiments.size()) {
+            ExpressionExperiment experiment = experiments.get(selectedRow);
+            detailsArea.setText(ExpressionExperimentDisplaySupport.buildExperimentDetailsText(experiment));
+            detailsArea.setCaretPosition(0);
+        } else {
+            detailsArea.setText("Select an experiment to view details.");
         }
     }
     

@@ -5,6 +5,7 @@ package simplegenomehub.model;
 
 import simplegenomehub.config.SimpleGenomeHubConfig;
 import simplegenomehub.runtime.HubSession;
+import simplegenomehub.util.PopulationImportGuard;
 import simplegenomehub.util.performance.LazySpeciesLoader;
 import simplegenomehub.util.performance.PerformanceMonitor;
 import java.io.File;
@@ -233,6 +234,8 @@ public class SpeciesManager {
             return false;
         }
 
+        if (!canChangeSpeciesDirectory(species)) return false;
+
         // Delete directory structure
         boolean deleted = deleteDirectory(species.getSpeciesDir());
         if (!deleted) {
@@ -304,6 +307,8 @@ public class SpeciesManager {
             species.setNotes(normalizedNotes);
             return updateSpecies(species);
         }
+
+        if (!canChangeSpeciesDirectory(species)) return false;
 
         if ((dataRootDirectory == null || !dataRootDirectory.isDirectory())) {
             JOptionPane.showMessageDialog(null,
@@ -444,6 +449,8 @@ public class SpeciesManager {
      */
     public boolean setDataRootDirectory(File newDir) {
         try {
+            if (PopulationImportGuard.isAnyBusy())
+                throw new IOException(PopulationImportGuard.describeAnyBusy() + "\nWait for the import before changing the data directory.");
             if (session == null) throw new IllegalStateException("No active Hub session owns the data directory");
             if (newDir == null) throw new IOException("No data directory selected");
             if (!newDir.exists()) Files.createDirectories(newDir.toPath());
@@ -473,6 +480,17 @@ public class SpeciesManager {
     }
 
     public File getDataRootDirectory() { return dataRootDirectory; }
+
+    private boolean canChangeSpeciesDirectory(SpeciesInfo species) {
+        if (!PopulationImportGuard.isBusy(species.getSpeciesDir())
+                && (session == null || !session.hasRunningTasks())) return true;
+        String message = "Hub tasks are still using this data directory. Wait for them to finish before deleting or renaming this genome.";
+        logger.warning(message);
+        if (!java.awt.GraphicsEnvironment.isHeadless()) JOptionPane.showMessageDialog(
+            session == null ? null : session.getHostContext().getOwnerWindow(), message,
+            "Tasks In Progress", JOptionPane.WARNING_MESSAGE);
+        return false;
+    }
 
     /**
      * Generate unique species key

@@ -887,6 +887,8 @@ public class AnnotationImportDialog extends JDialog {
         final File keggBackendFileForImport = resolvedKeggBackendFile;
         final AnnotationType selectedTypeForImport = getSelectedAnnotationType();
         final String selectedDelimiterForImport = (String) delimiterCombo.getSelectedItem();
+        final boolean keggPresetForImport = isKeggPresetMode();
+        final String keggBackendTypeForImport = getSelectedKeggBackendType();
         HubWorker<Boolean, String> importWorker = new HubWorker<Boolean, String>() {
             @Override
             protected Boolean doInBackground() throws Exception {
@@ -904,10 +906,10 @@ public class AnnotationImportDialog extends JDialog {
                 boolean success = false;
                 switch (selectedType) {
                     case GO:
-                        success = loadGOAnnotationsWithDelimiter(annotationData, annotationFile);
+                        success = loadGOAnnotationsWithDelimiter(annotationData, annotationFile, selectedDelimiterForImport);
                         break;
                     case KEGG:
-                        success = loadKEGGAnnotationsWithDelimiter(annotationData, annotationFile);
+                        success = loadKEGGAnnotationsWithDelimiter(annotationData, annotationFile, selectedDelimiterForImport);
                         break;
                     case INTERPRO:
                     case PFAM:
@@ -955,8 +957,8 @@ public class AnnotationImportDialog extends JDialog {
                         }
 
                         publish("Caching KEGG backend for this species...");
-                        if (isKeggPresetMode()) {
-                            KeggBackendManager.cachePresetForSpecies(targetSpecies, getSelectedKeggBackendType(), keggBackendFileForImport);
+                        if (keggPresetForImport) {
+                            KeggBackendManager.cachePresetForSpecies(targetSpecies, keggBackendTypeForImport, keggBackendFileForImport);
                         } else {
                             KeggBackendManager.cacheCustomForSpecies(targetSpecies, keggBackendFileForImport);
                         }
@@ -967,8 +969,7 @@ public class AnnotationImportDialog extends JDialog {
                     targetSpecies.setFunctionalAnnotations(annotationData);
                     
                     // Save functional annotations to species
-                    if (!targetSpecies.saveFunctionalAnnotations())
-                        throw new java.io.IOException("Failed to save functional annotations for " + targetSpecies.getSpeciesDirectoryName());
+                    targetSpecies.saveFunctionalAnnotationsChecked();
                     importSuccessful = true;
                     
                     // Debug: Print final annotation counts
@@ -1036,117 +1037,65 @@ public class AnnotationImportDialog extends JDialog {
 
     private FileFormatInfo analyzeFileFormat(File file, String selectedDelimiter) throws Exception {
         FileFormatInfo info = new FileFormatInfo();
-        
-        try (java.io.BufferedReader reader = new java.io.BufferedReader(new java.io.FileReader(file))) {
-            StringBuilder preview = new StringBuilder();
-            String line;
-            int lineCount = 0;
-            int dataRows = 0;
-            String detectedDelimiter = null;
-            int columnCount = 0;
-            
-            while ((line = reader.readLine()) != null && lineCount < 20) {
-                lineCount++;
-                preview.append(line).append("\n");
-                
-                // Skip empty lines and comments
-                if (line.trim().isEmpty() || line.startsWith("#")) {
-                    continue;
-                }
-                
-                // Auto-detect delimiter on first data line
-                if (detectedDelimiter == null) {
-                    if ("Auto Detect".equals(selectedDelimiter)) {
-                        // Count potential delimiters
-                        int tabCount = line.split("\t", -1).length - 1;
-                        int commaCount = line.split(",", -1).length - 1;
-                        int semicolonCount = line.split(";", -1).length - 1;
-                        
-                        if (tabCount >= commaCount && tabCount >= semicolonCount && tabCount > 0) {
-                            detectedDelimiter = "\t";
-                        } else if (commaCount >= semicolonCount && commaCount > 0) {
-                            detectedDelimiter = ",";
-                        } else if (semicolonCount > 0) {
-                            detectedDelimiter = ";";
-                        } else {
-                            detectedDelimiter = "\t"; // Default
-                        }
-                    } else {
-                        // Use manual selection
-                        switch (selectedDelimiter) {
-                            case "Tab": detectedDelimiter = "\t"; break;
-                            case "Comma": detectedDelimiter = ","; break;
-                            case "Semicolon": detectedDelimiter = ";"; break;
-                            default: detectedDelimiter = "\t";
-                        }
+        String delimiter = "Tab".equals(selectedDelimiter) ? "\t"
+            : "Comma".equals(selectedDelimiter) ? ","
+            : "Semicolon".equals(selectedDelimiter) ? ";" : null;
+        StringBuilder preview = new StringBuilder();
+        for (String line : GeneAnnotationData.readAnnotationPreview(file, 20)) {
+            preview.append(line).append("\n");
+            if (line.trim().isEmpty()) continue;
+            boolean comment = line.trim().startsWith("#");
+            String candidate = comment ? line.stripLeading().substring(1) : line;
+            if (comment) {
+                String declaredDelimiter = null;
+                for (String possible : new String[]{"\t", ",", ";"}) {
+                    if (GeneAnnotationData.isAnnotationHeader(candidate.split(java.util.regex.Pattern.quote(possible), -1))) {
+                        declaredDelimiter = possible;
+                        break;
                     }
                 }
-                
-                // Count columns
-                String[] parts = line.split(detectedDelimiter, -1);
-                if (columnCount == 0) {
-                    columnCount = parts.length;
-                } else if (parts.length != columnCount) {
-                    // Allow some variation in column count
-                    if (Math.abs(parts.length - columnCount) > 1) {
-                        info.isValid = false;
-                        info.errorMessage = "Inconsistent column count (expected " + columnCount + ", found " + parts.length + ")"; 
-                        info.preview = preview.toString();
-                        return info;
-                    }
-                }
-                
-                dataRows++;
+                if (declaredDelimiter == null) continue;
+                if (delimiter == null) delimiter = declaredDelimiter;
             }
-            
-            // Validate minimum requirements
-            if (columnCount < 2) {
-                info.isValid = false;
-                info.errorMessage = "Minimum 2 columns required (Gene_ID, Annotation_ID)";
-                info.preview = preview.toString();
-                return info;
+            if (delimiter == null) {
+                int tabs = line.split("\t", -1).length - 1;
+                int commas = line.split(",", -1).length - 1;
+                int semicolons = line.split(";", -1).length - 1;
+                delimiter = tabs >= commas && tabs >= semicolons && tabs > 0 ? "\t"
+                    : commas >= semicolons && commas > 0 ? "," : semicolons > 0 ? ";" : "\t";
             }
-            
-            if (dataRows == 0) {
-                info.isValid = false;
-                info.errorMessage = "No data rows found";
-                info.preview = preview.toString();
-                return info;
-            }
-            
-            // Set successful validation info
-            info.isValid = true;
-            info.delimiter = detectedDelimiter;
-            info.columnCount = columnCount;
-            info.dataRows = dataRows;
-            info.preview = preview.toString();
-            
-            if (lineCount == 20) {
-                info.preview += "... (file continues)";
-            }
-            
-            return info;
+            String[] fields = candidate.split(java.util.regex.Pattern.quote(delimiter), -1);
+            info.columnCount = Math.max(info.columnCount, fields.length);
+            if (!GeneAnnotationData.isAnnotationHeader(fields)) info.dataRows++;
         }
+        info.preview = preview.toString();
+        info.delimiter = delimiter == null ? "\t" : delimiter;
+        info.isValid = info.columnCount >= 2 && info.dataRows > 0;
+        if (!info.isValid) info.errorMessage = info.dataRows == 0 ? "No data rows found"
+            : "Minimum 2 columns required (Gene_ID, Annotation_ID)";
+        // This is a preview. The transactional importer validates every source row.
+        return info;
     }
-    
+
     /**
      * Load GO annotations with custom delimiter detection
      */
-    private boolean loadGOAnnotationsWithDelimiter(GeneAnnotationData data, File file) throws Exception {
-        FileFormatInfo formatInfo = analyzeFileFormat(file);
+    private boolean loadGOAnnotationsWithDelimiter(GeneAnnotationData data, File file, String delimiter) throws Exception {
+        FileFormatInfo formatInfo = analyzeFileFormat(file, delimiter);
         if (!formatInfo.isValid) {
             throw new Exception("Invalid file format: " + formatInfo.errorMessage);
         }
         
-        try (java.io.BufferedReader reader = new java.io.BufferedReader(new java.io.FileReader(file))) {
+        try (java.io.BufferedReader reader = GeneAnnotationData.openAnnotationReader(file)) {
             String line;
-            int imported = 0;
+            java.util.List<GeneAnnotationData.GeneAnnotation> parsed = new java.util.ArrayList<>();
             
             while ((line = reader.readLine()) != null) {
-                if (line.startsWith("#") || line.trim().isEmpty()) continue;
+                if (line.startsWith("\uFEFF")) line = line.substring(1);
+                if (line.trim().startsWith("#") || line.trim().isEmpty()) continue;
                 
                 String[] parts = line.split(java.util.regex.Pattern.quote(formatInfo.delimiter), -1);
-                if (parts.length < 2) continue;
+                if (parts.length < 2 || GeneAnnotationData.isAnnotationHeader(parts)) continue;
                 
                 String geneId = parts[0].trim();
                 String goId = parts[1].trim();
@@ -1162,10 +1111,11 @@ public class AnnotationImportDialog extends JDialog {
                 annotation.setEvidence(evidence);
                 annotation.setAttribute("category", category);
                 
-                data.addAnnotation(annotation);
-                imported++;
+                parsed.add(annotation);
             }
             
+            for (GeneAnnotationData.GeneAnnotation annotation : parsed) data.addAnnotation(annotation);
+            int imported = parsed.size();
             logger.info("Imported " + imported + " GO annotations using delimiter: " + 
                        (formatInfo.delimiter.equals("\t") ? "TAB" : formatInfo.delimiter));
             return imported > 0;
@@ -1175,21 +1125,22 @@ public class AnnotationImportDialog extends JDialog {
     /**
      * Load KEGG annotations with custom delimiter detection
      */
-    private boolean loadKEGGAnnotationsWithDelimiter(GeneAnnotationData data, File file) throws Exception {
-        FileFormatInfo formatInfo = analyzeFileFormat(file);
+    private boolean loadKEGGAnnotationsWithDelimiter(GeneAnnotationData data, File file, String delimiter) throws Exception {
+        FileFormatInfo formatInfo = analyzeFileFormat(file, delimiter);
         if (!formatInfo.isValid) {
             throw new Exception("Invalid file format: " + formatInfo.errorMessage);
         }
         
-        try (java.io.BufferedReader reader = new java.io.BufferedReader(new java.io.FileReader(file))) {
+        try (java.io.BufferedReader reader = GeneAnnotationData.openAnnotationReader(file)) {
             String line;
-            int imported = 0;
+            java.util.List<GeneAnnotationData.GeneAnnotation> parsed = new java.util.ArrayList<>();
             
             while ((line = reader.readLine()) != null) {
-                if (line.startsWith("#") || line.trim().isEmpty()) continue;
+                if (line.startsWith("\uFEFF")) line = line.substring(1);
+                if (line.trim().startsWith("#") || line.trim().isEmpty()) continue;
                 
                 String[] parts = line.split(java.util.regex.Pattern.quote(formatInfo.delimiter), -1);
-                if (parts.length < 2) continue;
+                if (parts.length < 2 || GeneAnnotationData.isAnnotationHeader(parts)) continue;
                 
                 String geneId = parts[0].trim();
                 String keggId = parts[1].trim();
@@ -1201,10 +1152,11 @@ public class AnnotationImportDialog extends JDialog {
                     new GeneAnnotationData.GeneAnnotation(geneId, keggId, pathway, GeneAnnotationData.AnnotationType.KEGG);
                 annotation.setDescription(pathway);
                 
-                data.addAnnotation(annotation);
-                imported++;
+                parsed.add(annotation);
             }
             
+            for (GeneAnnotationData.GeneAnnotation annotation : parsed) data.addAnnotation(annotation);
+            int imported = parsed.size();
             logger.info("Imported " + imported + " KEGG annotations using delimiter: " + 
                        (formatInfo.delimiter.equals("\t") ? "TAB" : formatInfo.delimiter));
             return imported > 0;

@@ -43,19 +43,7 @@ public class AnnotationTypeSelectionDialog extends JDialog {
         simplegenomehub.runtime.HubSession.attach(this, simplegenomehub.runtime.HubSession.forComponent(parent));
         this.targetSpecies = species;
         simplegenomehub.runtime.HubSession.attach(this, simplegenomehub.runtime.HubSession.forDataPath(species.getSpeciesDir()));
-        this.annotationData = species.getFunctionalAnnotations();
-        
-        // If no annotation data is loaded, try to load metadata first
-        if (this.annotationData == null && species.hasFunctionalAnnotations()) {
-            System.out.println("DEBUG: Annotation data not loaded, attempting to load metadata...");
-            boolean loaded = species.loadFunctionalAnnotations();
-            if (loaded) {
-                this.annotationData = species.getFunctionalAnnotations();
-                System.out.println("DEBUG: Functional annotations metadata loaded successfully");
-            } else {
-                System.out.println("DEBUG: Failed to load functional annotations metadata");
-            }
-        }
+        this.annotationData = FunctionalAnnotationSummarySupport.ensureAnnotationMetadataLoaded(species);
         
         initializeComponents();
         setupLayout();
@@ -169,31 +157,7 @@ public class AnnotationTypeSelectionDialog extends JDialog {
      * Get annotation count for a specific type from metadata or annotation data
      */
     private int getAnnotationCountForType(AnnotationType type) {
-        // First try to get from loaded annotation data
-        if (annotationData != null) {
-            Map<AnnotationType, Integer> counts = annotationData.getAnnotationCounts();
-            Integer count = counts.get(type);
-            if (count != null && count > 0) {
-                return count;
-            }
-        }
-        
-        // Fallback: try to get from metadata
-        AnnotationMetadata metadata = targetSpecies.getAnnotationMetadata(type);
-        if (metadata != null) {
-            return metadata.getTotalAnnotations();
-        }
-        
-        // If metadata is not loaded, try to load it
-        if (targetSpecies.loadAnnotationMetadata(type)) {
-            metadata = targetSpecies.getAnnotationMetadata(type);
-            if (metadata != null) {
-                return metadata.getTotalAnnotations();
-            }
-        }
-        
-        // Last resort: return 1 to indicate data exists but count unknown
-        return 1;
+        return FunctionalAnnotationSummarySupport.getAnnotationCountForType(targetSpecies, annotationData, type);
     }
     
     /**
@@ -292,67 +256,7 @@ public class AnnotationTypeSelectionDialog extends JDialog {
      * Update summary information
      */
     private void updateSummary() {
-        StringBuilder summary = new StringBuilder();
-        summary.append("FUNCTIONAL ANNOTATION SUMMARY\n");
-        summary.append("================================\n\n");
-        summary.append("Species: ").append(targetSpecies.getSpeciesName()).append("\n");
-        
-        // Use metadata-driven approach to get annotation statistics
-        java.util.Set<AnnotationType> availableTypes = targetSpecies.getAvailableAnnotationTypes();
-        
-        if (availableTypes.isEmpty()) {
-            summary.append("Total annotated genes: 0\n\n");
-            summary.append("Annotation Types:\n");
-            summary.append("-----------------\n");
-            summary.append("No annotations imported yet.\n");
-            summary.append("\nUse 'Import Annotations' to add\n");
-            summary.append("GO, KEGG, or other functional\n");
-            summary.append("annotation data.\n");
-        } else {
-            // Calculate total genes and annotations from metadata
-            int totalAnnotatedGenes = 0;
-            int totalAnnotations = 0;
-            
-            summary.append("Annotation Types:\n");
-            summary.append("-----------------\n");
-            
-            for (AnnotationType type : availableTypes) {
-                int count = getAnnotationCountForType(type);
-                summary.append(String.format("%-12s: %,6d annotations\n", 
-                    type.getShortName(), count));
-                totalAnnotations += count;
-                
-                // Try to get unique genes from metadata
-                AnnotationMetadata metadata = targetSpecies.getAnnotationMetadata(type);
-                if (metadata != null) {
-                    totalAnnotatedGenes = Math.max(totalAnnotatedGenes, metadata.getUniqueGenes());
-                }
-            }
-            
-            // Add total annotated genes to summary
-            int insertPos = summary.indexOf("Annotation Types:");
-            summary.insert(insertPos, String.format("Total annotated genes: %d\n\n", totalAnnotatedGenes));
-            
-            summary.append(String.format("\nTotal: %,d annotations\n", totalAnnotations));
-            
-            // Try to get import time from annotation data or metadata
-            if (annotationData != null && annotationData.getImportTime() != null) {
-                summary.append("\nLast import: ");
-                summary.append(annotationData.getImportTime().format(
-                    java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm")));
-            } else {
-                // Try to get from metadata of first available type
-                AnnotationType firstType = availableTypes.iterator().next();
-                AnnotationMetadata metadata = targetSpecies.getAnnotationMetadata(firstType);
-                if (metadata != null && metadata.getImportDate() != null) {
-                    summary.append("\nLast import: ");
-                    summary.append(metadata.getImportDate().format(
-                        java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm")));
-                }
-            }
-        }
-        
-        summaryArea.setText(summary.toString());
+        summaryArea.setText(FunctionalAnnotationSummarySupport.buildSummaryText(targetSpecies, true, true));
     }
     
     /**

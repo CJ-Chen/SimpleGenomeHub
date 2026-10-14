@@ -3,12 +3,15 @@ package simplegenomehub.gui;
 import simplegenomehub.runtime.HubWorker;
 
 import simplegenomehub.model.SpeciesInfo;
+import simplegenomehub.util.fileio.SetNoteSupport;
 
 import javax.swing.*;
 import javax.swing.event.DocumentEvent;
 import javax.swing.event.DocumentListener;
 import java.awt.*;
 import java.io.File;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.logging.Logger;
@@ -26,8 +29,10 @@ final class CreateRegionSetDialog extends JDialog {
     private final JTextField regionSetNameField;
     private final JTextArea regionSetArea;
     private final JButton createButton;
+    private final JButton noteButton;
     private volatile boolean regionSetCreated;
     private boolean showingTemplate;
+    private Map<String, SetNoteSupport.Note> pendingNotes = new LinkedHashMap<>();
 
     CreateRegionSetDialog(Window parent, SpeciesInfo species, Runnable onCreateSuccess) {
         super(parent, "Create a Region Set", ModalityType.MODELESS);
@@ -38,6 +43,7 @@ final class CreateRegionSetDialog extends JDialog {
         this.regionSetNameField = new JTextField();
         this.regionSetArea = new JTextArea(14, 48);
         this.createButton = new JButton("Create");
+        this.noteButton = new JButton("Note");
 
         initializeComponents();
         setupLayout();
@@ -67,6 +73,13 @@ final class CreateRegionSetDialog extends JDialog {
         createButton.setForeground(SimpleGenomeHubStyle.DIALOG_PRIMARY_BUTTON_TEXT);
         createButton.setFocusPainted(false);
         createButton.setPreferredSize(new Dimension(120, 38));
+
+        noteButton.setEnabled(false);
+        noteButton.setBackground(SimpleGenomeHubStyle.DIALOG_SECONDARY_BUTTON);
+        noteButton.setForeground(SimpleGenomeHubStyle.DIALOG_SECONDARY_BUTTON_TEXT);
+        noteButton.setFocusPainted(false);
+        noteButton.setPreferredSize(new Dimension(120, 38));
+        noteButton.setToolTipText("Add a note and a card colour to the regions above");
     }
 
     private void setupLayout() {
@@ -95,8 +108,9 @@ final class CreateRegionSetDialog extends JDialog {
         regionPanel.add(scrollPane, BorderLayout.CENTER);
         formPanel.add(regionPanel, BorderLayout.CENTER);
 
-        JPanel actionPanel = new JPanel(new FlowLayout(FlowLayout.CENTER, 0, 0));
+        JPanel actionPanel = new JPanel(new FlowLayout(FlowLayout.CENTER, 10, 0));
         actionPanel.setOpaque(false);
+        actionPanel.add(noteButton);
         actionPanel.add(createButton);
 
         root.add(formPanel, BorderLayout.CENTER);
@@ -142,6 +156,7 @@ final class CreateRegionSetDialog extends JDialog {
             }
         });
         createButton.addActionListener(e -> createRegionSet());
+        noteButton.addActionListener(e -> editNotes());
     }
 
     private void installTemplateText() {
@@ -156,6 +171,52 @@ final class CreateRegionSetDialog extends JDialog {
         boolean hasName = !regionSetNameField.getText().trim().isEmpty();
         boolean hasContent = !showingTemplate && GeneSetFileSupport.hasRegionEntries(regionSetArea.getText());
         createButton.setEnabled(hasName && hasContent);
+        noteButton.setEnabled(hasContent);
+    }
+
+    /**
+     * Opens the note editor for the regions currently typed. The area is only parsed so the
+     * cards can be labelled; nothing is validated here.
+     */
+    private void editNotes() {
+        List<String> regionKeys = currentRegionKeys();
+        if (regionKeys == null || regionKeys.isEmpty()) {
+            JOptionPane.showMessageDialog(this,
+                "Enter at least one valid region first.",
+                "No Regions",
+                JOptionPane.INFORMATION_MESSAGE);
+            return;
+        }
+
+        String regionSetName = regionSetNameField.getText().trim();
+        Map<String, SetNoteSupport.Note> editedNotes = SetNoteUiSupport.editNotes(
+            this,
+            "Notes - " + (regionSetName.isEmpty() ? "Region Set" : regionSetName),
+            regionKeys,
+            pendingNotes
+        );
+        if (editedNotes != null) {
+            pendingNotes = editedNotes;
+        }
+    }
+
+    /** {@code Chr:start-end} keys of the typed regions; null when the text is not usable yet. */
+    private List<String> currentRegionKeys() {
+        List<GeneSetFileSupport.RegionEntry> entries;
+        try {
+            entries = GeneSetFileSupport.parseRegionEntries(regionSetArea.getText());
+        } catch (IllegalArgumentException ex) {
+            return null;
+        }
+        return regionKeysOf(entries);
+    }
+
+    private List<String> regionKeysOf(List<GeneSetFileSupport.RegionEntry> entries) {
+        List<String> keys = new ArrayList<>(entries.size());
+        for (GeneSetFileSupport.RegionEntry entry : entries) {
+            keys.add(SetNoteSupport.regionKey(entry.getChromosomeName(), entry.getStartPos(), entry.getEndPos()));
+        }
+        return keys;
     }
 
     private void createRegionSet() {
@@ -228,6 +289,7 @@ final class CreateRegionSetDialog extends JDialog {
             return;
         }
 
+        final Map<String, SetNoteSupport.Note> notesSnapshot = new LinkedHashMap<>(pendingNotes);
         setControlsEnabled(false);
 
         HubWorker<List<String>, Void> worker = new HubWorker<List<String>, Void>() {
@@ -237,8 +299,10 @@ final class CreateRegionSetDialog extends JDialog {
                 List<String> validationErrors = GeneSetFileSupport.validateRegionEntries(regionEntries, chromosomeSizes);
                 if (validationErrors.isEmpty()) {
                     if (isCancelled()) throw new java.util.concurrent.CancellationException();
-                    GeneSetFileSupport.writeTextFile(outputFile,
-                        GeneSetFileSupport.formatRegionSetContent(regionEntries));
+                    List<String> savedKeys = regionKeysOf(regionEntries);
+                    GeneSetFileSupport.writeSetAndNotes(outputFile,
+                        GeneSetFileSupport.formatRegionSetContent(regionEntries), savedKeys,
+                        SetNoteUiSupport.alignToSavedIds(savedKeys, null, notesSnapshot, savedKeys), null);
                     regionSetCreated = true;
                 }
                 return validationErrors;
@@ -274,7 +338,7 @@ final class CreateRegionSetDialog extends JDialog {
                             "Create Complete",
                             JOptionPane.INFORMATION_MESSAGE);
                         dispose();
-                        if (onCreateSuccess != null) {
+                        if (onCreateSuccess != null && isPresentationCurrent()) {
                             onCreateSuccess.run();
                         }
                     } catch (Exception ex) {
@@ -296,10 +360,11 @@ final class CreateRegionSetDialog extends JDialog {
     private void setControlsEnabled(boolean enabled) {
         regionSetNameField.setEnabled(enabled);
         regionSetArea.setEnabled(enabled);
+        boolean hasContent = !showingTemplate && GeneSetFileSupport.hasRegionEntries(regionSetArea.getText());
         createButton.setEnabled(enabled
             && !regionSetNameField.getText().trim().isEmpty()
-            && !showingTemplate
-            && GeneSetFileSupport.hasRegionEntries(regionSetArea.getText()));
+            && hasContent);
+        noteButton.setEnabled(enabled && hasContent);
     }
 
     private Color STAT_TEXT_COLOR() {

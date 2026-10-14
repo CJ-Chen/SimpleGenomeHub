@@ -1,0 +1,13 @@
+##gff-version 3
+chrP	fixture	CDS	20	22	.	+	0	Parent=plus;gene_id=plus
+chrP	fixture	CDS	10	12	.	+	0	Parent=plus;gene_id=plus
+chrP	fixture	CDS	35	37	.	-	0	Parent=minus;gene_id=minus
+chrP	fixture	CDS	42	44	.	-	0	Parent=minus;gene_id=minus
+chrP	fixture	CDS	3	5	.	+	0	Parent=plusEdge;gene_id=plusEdge
+chrP	fixture	CDS	60	62	.	-	0	Parent=minusEdge;gene_id=minusEdge
+chrP	fixture	CDS	1	3	.	+	0	Parent=plusNoUpstream;gene_id=plusNoUpstream
+chrP	fixture	CDS	62	64	.	-	0	Parent=minusNoUpstream;gene_id=minusNoUpstream
+chrP	fixture	CDS	10	20	.	-	0	Parent=minusGiven;gene_id=minusGiven
+chrP	fixture	CDS	40	50	.	-	0	Parent=minusGiven;gene_id=minusGiven
+chrP	fixture	CDS	10	50	.	-	0	Parent=minusNestedIso1;gene_id=minusNested
+chrP	fixture	CDS	40	44	.	-	0	Parent=minusNestedIso2;gene_id=minusNested

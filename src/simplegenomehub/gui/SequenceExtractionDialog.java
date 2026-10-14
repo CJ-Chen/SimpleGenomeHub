@@ -6,6 +6,7 @@ package simplegenomehub.gui;
 import simplegenomehub.runtime.HubWorker;
 
 import simplegenomehub.model.SpeciesInfo;
+import simplegenomehub.util.fileio.AnnotationGeneSubsetWriter;
 import simplegenomehub.util.fileio.TBtoolsSequenceExtractor;
 import simplegenomehub.util.fileio.RepresentativeTranscriptSelector;
 import javax.swing.*;
@@ -21,12 +22,12 @@ import java.awt.GridBagConstraints;
 import java.awt.GridLayout;
 import java.awt.Insets;
 import java.awt.Window;
-import java.awt.event.ActionEvent;
-import java.awt.event.ActionListener;
 import java.io.*;
 import java.util.ArrayList;
-import java.util.Map;
+import java.util.Collections;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
@@ -36,8 +37,18 @@ import java.util.concurrent.atomic.AtomicInteger;
  * @author SimpleGenomeHub
  */
 public class SequenceExtractionDialog extends JDialog {
+
+    private static final String LOAD_GENE_SET_OPTION = "Load Gene Set";
+    private static final String NO_GENE_SETS_OPTION = "Load Gene Set (No Sets)";
     
     private SpeciesInfo species;
+
+    // Gene selection
+    private JCheckBox allGenesCheck;
+    private JTextArea geneIdInputArea;
+    private JComboBox<String> geneSetComboBox;
+    private JButton clearGeneIdsButton;
+    private List<File> availableGeneSetFiles;
     
     // Extraction options
     private JCheckBox extractTranscriptsCheck;
@@ -93,6 +104,19 @@ public class SequenceExtractionDialog extends JDialog {
      * Initialize components
      */
     private void initializeComponents() {
+        // Gene selection components
+        allGenesCheck = new JCheckBox("All Genes", true);
+        geneIdInputArea = new JTextArea(3, 36);
+        geneIdInputArea.setLineWrap(true);
+        geneIdInputArea.setWrapStyleWord(true);
+        geneIdInputArea.setBorder(BorderFactory.createLoweredBevelBorder());
+        geneSetComboBox = new JComboBox<>();
+        geneSetComboBox.setPreferredSize(new Dimension(190, 30));
+        geneSetComboBox.setToolTipText("Load IDs from a Gene Set in the current species");
+        clearGeneIdsButton = new JButton("Clear");
+        clearGeneIdsButton.setPreferredSize(SimpleGenomeHubStyle.SIZE_BUTTON_80_X_30);
+        availableGeneSetFiles = new ArrayList<>();
+
         // Extraction type checkboxes
         extractTranscriptsCheck = new JCheckBox("Extract Transcripts", true);
         extractCdsCheck = new JCheckBox("Extract CDS Sequences", true);
@@ -100,6 +124,7 @@ public class SequenceExtractionDialog extends JDialog {
         extractPromotersCheck = new JCheckBox("Extract 'Promoter' Sequences", false);
         promoterLengthField = new JTextField("2000", 8);
         promoterLengthField.setToolTipText("Upstream region length in base pairs");
+        promoterLengthField.setEnabled(false);
         representativeOnlyCheck = new JCheckBox("Representative transcripts only", false);
         
         // Representative selection options
@@ -145,12 +170,15 @@ public class SequenceExtractionDialog extends JDialog {
         // Set consistent button font
         Font buttonFont = SimpleGenomeHubStyle.FONT_SANS_PLAIN_11;
         browseButton.setFont(buttonFont);
+        geneSetComboBox.setFont(buttonFont);
+        clearGeneIdsButton.setFont(buttonFont);
         extractButton.setFont(buttonFont);
         extractGffButton.setFont(buttonFont);
         openOutputDirButton.setFont(buttonFont);
         cancelButton.setFont(buttonFont);
 
         applyUniformToggleWidths();
+        refreshGeneSetOptions();
 
         // Set default output directory to species directory
         if (species.getSpeciesDir() != null) {
@@ -162,6 +190,7 @@ public class SequenceExtractionDialog extends JDialog {
         
         // Initially disable representative options
         updateRepresentativeOptions();
+        updateGeneSelectionControls(true);
     }
     
     /**
@@ -203,6 +232,15 @@ public class SequenceExtractionDialog extends JDialog {
         JPanel panel = new JPanel(new GridBagLayout());
         GridBagConstraints gbc = new GridBagConstraints();
 
+        JPanel geneSelectionPanel = createGeneSelectionPanel();
+        gbc.gridx = 0;
+        gbc.gridy = 0;
+        gbc.fill = GridBagConstraints.HORIZONTAL;
+        gbc.weightx = 1.0;
+        gbc.weighty = 0.0;
+        gbc.insets = new Insets(0, 0, 10, 0);
+        panel.add(geneSelectionPanel, gbc);
+
         // Sequence types panel
         JPanel typesPanel = new JPanel(new BorderLayout(0, 10));
         typesPanel.setBorder(new TitledBorder("Sequence Types to Extract"));
@@ -237,8 +275,7 @@ public class SequenceExtractionDialog extends JDialog {
         typesPanel.add(typesDetailPanel, BorderLayout.CENTER);
 
         // Add types panel to main panel
-        gbc.gridx = 0;
-        gbc.gridy = 0;
+        gbc.gridy = 1;
         gbc.fill = GridBagConstraints.HORIZONTAL;
         gbc.weightx = 1.0;
         gbc.weighty = 0.0;  // Don't expand vertically
@@ -270,11 +307,39 @@ public class SequenceExtractionDialog extends JDialog {
         representativePanel.add(descArea, BorderLayout.CENTER);
 
         // Add representative panel to main panel
-        gbc.gridy = 1;
+        gbc.gridy = 2;
         gbc.weighty = 0.0;  // Don't expand vertically
         gbc.insets = new Insets(0, 0, 0, 0);
         panel.add(representativePanel, gbc);
 
+        return panel;
+    }
+
+    private JPanel createGeneSelectionPanel() {
+        JPanel panel = new JPanel(new BorderLayout(10, 6));
+        panel.setBorder(new TitledBorder("Gene Selection"));
+
+        JPanel modePanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 4, 0));
+        modePanel.setOpaque(false);
+        modePanel.add(allGenesCheck);
+        panel.add(modePanel, BorderLayout.NORTH);
+
+        JPanel lookupPanel = new JPanel(new BorderLayout(6, 0));
+        lookupPanel.setOpaque(false);
+        lookupPanel.add(new JLabel("Sequence ID Lookup:"), BorderLayout.WEST);
+        lookupPanel.add(new JScrollPane(geneIdInputArea), BorderLayout.CENTER);
+
+        JPanel controlsPanel = new JPanel();
+        controlsPanel.setOpaque(false);
+        controlsPanel.setLayout(new BoxLayout(controlsPanel, BoxLayout.Y_AXIS));
+        geneSetComboBox.setAlignmentX(Component.LEFT_ALIGNMENT);
+        clearGeneIdsButton.setAlignmentX(Component.LEFT_ALIGNMENT);
+        controlsPanel.add(geneSetComboBox);
+        controlsPanel.add(Box.createVerticalStrut(6));
+        controlsPanel.add(clearGeneIdsButton);
+        lookupPanel.add(controlsPanel, BorderLayout.EAST);
+
+        panel.add(lookupPanel, BorderLayout.CENTER);
         return panel;
     }
 
@@ -411,6 +476,10 @@ public class SequenceExtractionDialog extends JDialog {
      * Setup event handlers
      */
     private void setupEventHandlers() {
+        allGenesCheck.addActionListener(e -> updateGeneSelectionControls(true));
+        geneSetComboBox.addActionListener(e -> loadSelectedGeneSet());
+        clearGeneIdsButton.addActionListener(e -> clearGeneSelection());
+
         representativeOnlyCheck.addActionListener(e -> updateRepresentativeOptions());
 
         extractPromotersCheck.addActionListener(e -> {
@@ -437,6 +506,144 @@ public class SequenceExtractionDialog extends JDialog {
         longestCdsRadio.setEnabled(enabled);
         highestExpressionRadio.setEnabled(enabled);
         firstAnnotationRadio.setEnabled(enabled);
+    }
+
+    private void refreshGeneSetOptions() {
+        availableGeneSetFiles.clear();
+        for (File setFile : GeneSetImportSupport.loadAvailableSetFiles(species)) {
+            if (GeneSetFileSupport.detectSetKind(setFile) == GeneSetFileSupport.SetKind.GENE) {
+                availableGeneSetFiles.add(setFile);
+            }
+        }
+
+        DefaultComboBoxModel<String> model = new DefaultComboBoxModel<>();
+        model.addElement(availableGeneSetFiles.isEmpty() ? NO_GENE_SETS_OPTION : LOAD_GENE_SET_OPTION);
+        for (File setFile : availableGeneSetFiles) {
+            model.addElement(getGeneSetDisplayName(setFile));
+        }
+        geneSetComboBox.setModel(model);
+        geneSetComboBox.setSelectedIndex(0);
+    }
+
+    private void loadSelectedGeneSet() {
+        int selectedIndex = geneSetComboBox.getSelectedIndex();
+        if (selectedIndex <= 0) {
+            return;
+        }
+
+        int fileIndex = selectedIndex - 1;
+        if (fileIndex >= availableGeneSetFiles.size()) {
+            geneSetComboBox.setSelectedIndex(0);
+            return;
+        }
+
+        File setFile = availableGeneSetFiles.get(fileIndex);
+        try {
+            List<String> ids = GeneSetFileSupport.parseGeneIds(
+                GeneSetFileSupport.readGeneSetContent(setFile));
+            if (ids.isEmpty()) {
+                JOptionPane.showMessageDialog(this,
+                    "The selected Gene Set does not contain any IDs.",
+                    "Empty Gene Set", JOptionPane.WARNING_MESSAGE);
+                geneSetComboBox.setSelectedIndex(0);
+                return;
+            }
+            geneIdInputArea.setText(String.join("\n", ids));
+            geneIdInputArea.setCaretPosition(0);
+            geneIdInputArea.requestFocusInWindow();
+        } catch (IOException ex) {
+            JOptionPane.showMessageDialog(this,
+                "Failed to load Gene Set:\n" + ex.getMessage(),
+                "Gene Set Load Error", JOptionPane.ERROR_MESSAGE);
+            geneSetComboBox.setSelectedIndex(0);
+        }
+    }
+
+    private String getGeneSetDisplayName(File setFile) {
+        String name = setFile.getName();
+        String suffix = ".gene.txt";
+        return name.toLowerCase().endsWith(suffix)
+            ? name.substring(0, name.length() - suffix.length())
+            : name;
+    }
+
+    private void clearGeneSelection() {
+        geneIdInputArea.setText("");
+        if (geneSetComboBox.getItemCount() > 0) {
+            geneSetComboBox.setSelectedIndex(0);
+        }
+        geneIdInputArea.requestFocusInWindow();
+    }
+
+    private void updateGeneSelectionControls(boolean controlsEnabled) {
+        boolean customSelectionEnabled = controlsEnabled && !allGenesCheck.isSelected();
+        geneIdInputArea.setEnabled(customSelectionEnabled);
+        geneSetComboBox.setEnabled(customSelectionEnabled && !availableGeneSetFiles.isEmpty());
+        clearGeneIdsButton.setEnabled(customSelectionEnabled);
+    }
+
+    private Set<String> resolveTargetGeneIds() {
+        if (allGenesCheck.isSelected()) {
+            return Collections.emptySet();
+        }
+
+        List<String> inputIds = parseTargetIds(geneIdInputArea.getText());
+        if (inputIds.isEmpty()) {
+            JOptionPane.showMessageDialog(this,
+                "Please enter at least one gene or transcript ID, or load a Gene Set.",
+                "No Gene IDs", JOptionPane.WARNING_MESSAGE);
+            return null;
+        }
+
+        try {
+            GeneSetImportSupport.GeneIdResolution resolution =
+                GeneSetImportSupport.resolveGeneIds(species, inputIds);
+            List<String> missingIds = resolution.getMissingIds();
+            if (!missingIds.isEmpty()) {
+                showMissingGeneIds(missingIds);
+                return null;
+            }
+
+            LinkedHashSet<String> resolvedGeneIds =
+                new LinkedHashSet<>(resolution.getResolvedGeneIds());
+            if (resolvedGeneIds.isEmpty()) {
+                JOptionPane.showMessageDialog(this,
+                    "No valid gene IDs were found in the current annotation.",
+                    "No Genes Found", JOptionPane.WARNING_MESSAGE);
+                return null;
+            }
+            return resolvedGeneIds;
+        } catch (Exception ex) {
+            JOptionPane.showMessageDialog(this,
+                "Failed to resolve gene IDs:\n" + ex.getMessage(),
+                "Gene ID Resolution Error", JOptionPane.ERROR_MESSAGE);
+            return null;
+        }
+    }
+
+    private List<String> parseTargetIds(String rawInput) {
+        LinkedHashSet<String> ids = new LinkedHashSet<>();
+        if (rawInput == null) {
+            return new ArrayList<>();
+        }
+        for (String rawId : rawInput.split("[,;\\n\\r\\s]+")) {
+            String id = rawId.trim();
+            if (!id.isEmpty()) {
+                ids.add(id);
+            }
+        }
+        return new ArrayList<>(ids);
+    }
+
+    private void showMissingGeneIds(List<String> missingIds) {
+        JTextArea messageArea = new JTextArea(12, 48);
+        messageArea.setEditable(false);
+        messageArea.setFont(SimpleGenomeHubStyle.FONT_MONOSPACED_PLAIN_12);
+        messageArea.setText("IDs not found in the current annotation:\n\n"
+            + String.join("\n", missingIds));
+        messageArea.setCaretPosition(0);
+        JOptionPane.showMessageDialog(this, new JScrollPane(messageArea),
+            "Gene IDs Not Found", JOptionPane.WARNING_MESSAGE);
     }
     
     /**
@@ -548,6 +755,11 @@ public class SequenceExtractionDialog extends JDialog {
                 "No Selection", JOptionPane.WARNING_MESSAGE);
             return;
         }
+
+        Set<String> targetGeneIds = resolveTargetGeneIds();
+        if (targetGeneIds == null) {
+            return;
+        }
         
         String outputPath = outputDirField.getText().trim();
         if (outputPath.isEmpty()) {
@@ -588,7 +800,16 @@ public class SequenceExtractionDialog extends JDialog {
         HubWorker<Boolean, String> worker = new HubWorker<Boolean, String>() {
             @Override
             protected Boolean doInBackground() throws Exception {
+                File selectedAnnotationFile = null;
                 try {
+                    File extractionAnnotationFile = annotationFile;
+                    if (!targetGeneIds.isEmpty()) {
+                        publish("Preparing annotation for " + targetGeneIds.size() + " selected genes...");
+                        selectedAnnotationFile = AnnotationGeneSubsetWriter.createSubset(
+                            annotationFile, targetGeneIds);
+                        extractionAnnotationFile = selectedAnnotationFile;
+                    }
+
                     AtomicInteger completedTasks = new AtomicInteger(0);
                     int totalTasks = 0;
                     
@@ -611,9 +832,11 @@ public class SequenceExtractionDialog extends JDialog {
                         if (representativeOnlyCheck.isSelected()) {
                             String criteria = getSelectionCriteria();
                             publish("Using representative selection criteria: " + criteria);
-                            result = TBtoolsSequenceExtractor.extractRepresentativeTranscripts(genomeFile, annotationFile, outputFile, criteria);
+                            result = TBtoolsSequenceExtractor.extractRepresentativeTranscripts(
+                                genomeFile, extractionAnnotationFile, outputFile, criteria);
                         } else {
-                            result = TBtoolsSequenceExtractor.extractAllTranscripts(genomeFile, annotationFile, outputFile);
+                            result = TBtoolsSequenceExtractor.extractAllTranscripts(
+                                genomeFile, extractionAnnotationFile, outputFile);
                         }
 
                         if (result.isSuccess()) {
@@ -636,9 +859,11 @@ public class SequenceExtractionDialog extends JDialog {
                         TBtoolsSequenceExtractor.ExtractionResult result;
                         if (representativeOnlyCheck.isSelected()) {
                             String criteria = getSelectionCriteria();
-                            result = TBtoolsSequenceExtractor.extractRepresentativeCDS(genomeFile, annotationFile, outputFile, criteria);
+                            result = TBtoolsSequenceExtractor.extractRepresentativeCDS(
+                                genomeFile, extractionAnnotationFile, outputFile, criteria);
                         } else {
-                            result = TBtoolsSequenceExtractor.extractAllCDS(genomeFile, annotationFile, outputFile);
+                            result = TBtoolsSequenceExtractor.extractAllCDS(
+                                genomeFile, extractionAnnotationFile, outputFile);
                         }
 
                         if (result.isSuccess()) {
@@ -661,9 +886,11 @@ public class SequenceExtractionDialog extends JDialog {
                         TBtoolsSequenceExtractor.ExtractionResult result;
                         if (representativeOnlyCheck.isSelected()) {
                             String criteria = getSelectionCriteria();
-                            result = TBtoolsSequenceExtractor.extractRepresentativeProteins(genomeFile, annotationFile, outputFile, criteria);
+                            result = TBtoolsSequenceExtractor.extractRepresentativeProteins(
+                                genomeFile, extractionAnnotationFile, outputFile, criteria);
                         } else {
-                            result = TBtoolsSequenceExtractor.extractAllProteins(genomeFile, annotationFile, outputFile);
+                            result = TBtoolsSequenceExtractor.extractAllProteins(
+                                genomeFile, extractionAnnotationFile, outputFile);
                         }
 
                         if (result.isSuccess()) {
@@ -688,7 +915,8 @@ public class SequenceExtractionDialog extends JDialog {
                             File outputFile = new File(outputDir, promoterFileName);
 
                             TBtoolsSequenceExtractor.ExtractionResult result =
-                                TBtoolsSequenceExtractor.extractPromoters(genomeFile, annotationFile, outputFile, promoterLength);
+                                TBtoolsSequenceExtractor.extractPromoters(
+                                    genomeFile, extractionAnnotationFile, outputFile, promoterLength);
 
                             if (result.isSuccess()) {
                                 publish("✓ Extracted promoter sequences to " + outputFile.getName() +
@@ -719,6 +947,8 @@ public class SequenceExtractionDialog extends JDialog {
                 } catch (Exception e) {
                     publish("ERROR: " + e.getMessage());
                     return false;
+                } finally {
+                    deleteTemporaryFile(selectedAnnotationFile);
                 }
             }
             
@@ -839,6 +1069,8 @@ public class SequenceExtractionDialog extends JDialog {
      * Enable/disable controls
      */
     private void setControlsEnabled(boolean enabled) {
+        allGenesCheck.setEnabled(enabled);
+        updateGeneSelectionControls(enabled);
         extractTranscriptsCheck.setEnabled(enabled);
         extractCdsCheck.setEnabled(enabled);
         extractProteinsCheck.setEnabled(enabled);
@@ -878,11 +1110,22 @@ public class SequenceExtractionDialog extends JDialog {
             logArea.setCaretPosition(logArea.getDocument().getLength());
         });
     }
+
+    private void deleteTemporaryFile(File file) {
+        if (file != null && file.exists() && !file.delete()) {
+            file.deleteOnExit();
+        }
+    }
     
     /**
      * Generate representative transcript GFF3 file
      */
     private void generateRepresentativeGff() {
+        Set<String> targetGeneIds = resolveTargetGeneIds();
+        if (targetGeneIds == null) {
+            return;
+        }
+
         String outputPath = outputDirField.getText().trim();
         if (outputPath.isEmpty()) {
             JOptionPane.showMessageDialog(this,
@@ -922,8 +1165,17 @@ public class SequenceExtractionDialog extends JDialog {
         HubWorker<Boolean, String> worker = new HubWorker<Boolean, String>() {
             @Override
             protected Boolean doInBackground() throws Exception {
+                File selectedAnnotationFile = null;
                 try {
                     publish("Starting representative transcript GFF3 generation...");
+
+                    File generationAnnotationFile = annotationFile;
+                    if (!targetGeneIds.isEmpty()) {
+                        publish("Preparing annotation for " + targetGeneIds.size() + " selected genes...");
+                        selectedAnnotationFile = AnnotationGeneSubsetWriter.createSubset(
+                            annotationFile, targetGeneIds);
+                        generationAnnotationFile = selectedAnnotationFile;
+                    }
                     
                     setProgress(25);
                     
@@ -942,7 +1194,7 @@ public class SequenceExtractionDialog extends JDialog {
                     
                     // Use the existing RepresentativeTranscriptSelector to generate the annotation
                     boolean success = RepresentativeTranscriptSelector.generateRepresentativeAnnotation(
-                        annotationFile, outputFile, criteria);
+                        generationAnnotationFile, outputFile, criteria);
                     
                     setProgress(100);
                     
@@ -959,6 +1211,8 @@ public class SequenceExtractionDialog extends JDialog {
                 } catch (Exception e) {
                     publish("ERROR: " + e.getMessage());
                     return false;
+                } finally {
+                    deleteTemporaryFile(selectedAnnotationFile);
                 }
             }
             

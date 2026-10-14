@@ -73,6 +73,7 @@ public final class SimpleGenomeHubFontManager {
                 SimpleGenomeHubConfig.getInstance().getUiFontScalePercent()
             );
             SimpleGenomeHubStyle.setUserFontScalePercent(currentScalePercent);
+            simplegenomehub.population.fst.FstUiStyle.setScalePercentOverride(currentScalePercent);
             installed = true;
         }
 
@@ -311,6 +312,7 @@ public final class SimpleGenomeHubFontManager {
 
         currentScalePercent = clampedScalePercent;
         SimpleGenomeHubStyle.setUserFontScalePercent(clampedScalePercent);
+        simplegenomehub.population.fst.FstUiStyle.setScalePercentOverride(clampedScalePercent);
         applyScaleToOpenWindows(previousScalePercent);
 
         if (persistToConfig) {

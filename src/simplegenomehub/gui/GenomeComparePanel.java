@@ -11,6 +11,7 @@ import simplegenomehub.model.SpeciesManager;
 import simplegenomehub.model.GenomeData;
 import simplegenomehub.util.fileio.DualSyntenyChromosomeOrderBuilder;
 import simplegenomehub.util.fileio.DualSyntenyPlotLauncher;
+import simplegenomehub.util.fileio.GeneSetSupport;
 import simplegenomehub.util.fileio.GenomeCompareService;
 
 import javax.swing.*;
@@ -41,9 +42,11 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
 
 /**
@@ -670,6 +673,7 @@ public class GenomeComparePanel extends JPanel {
         LinkedHashSet<String> resolvedIds = new LinkedHashSet<>();
         List<String> missingIds = new ArrayList<>();
         List<String> correctedLines = new ArrayList<>();
+        Map<String, List<String>> resolvedIdsByInputId = new LinkedHashMap<>();
 
         List<SpeciesInfo> targets = new ArrayList<>();
         if (genome1Species != null) {
@@ -688,6 +692,8 @@ public class GenomeComparePanel extends JPanel {
                     if (!result.getResolvedGeneIds().isEmpty()) {
                         resolvedIds.addAll(result.getResolvedGeneIds());
                         correctedLines.addAll(result.getCorrectedGeneLines());
+                        resolvedIdsByInputId.computeIfAbsent(inputId, key -> new ArrayList<>())
+                            .addAll(result.getResolvedGeneIds());
                         matched = true;
                     }
                 } catch (Exception ex) {
@@ -700,11 +706,20 @@ public class GenomeComparePanel extends JPanel {
             }
         }
 
+        // These ids may come from several species, so a chromosome/position would be
+        // ambiguous here: report the ids only (the rows are written per species elsewhere).
+        List<GeneSetSupport.Entry> resolvedEntries = new ArrayList<>();
+        for (String resolvedId : resolvedIds) {
+            resolvedEntries.add(new GeneSetSupport.Entry(resolvedId, "", 0, 0, 0));
+        }
+
         GeneSetGeneIdValidationSupport.ValidationResult validationResult =
             new GeneSetGeneIdValidationSupport.ValidationResult(
                 new ArrayList<>(resolvedIds),
                 missingIds,
-                correctedLines
+                correctedLines,
+                resolvedEntries,
+                resolvedIdsByInputId
             );
         return new HighlightResolutionResult(new ArrayList<>(resolvedIds), missingIds, validationResult);
     }
