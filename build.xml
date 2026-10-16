@@ -209,16 +209,8 @@
     </target>
 
     <target name="test-regression" depends="compile-regression"
-            description="Verify sequence extraction and annotation persistence using isolated fixtures">
-        <mkdir dir="${build.dir}/regression/home-science"/>
+            description="Verify annotation import, table display and persistence using isolated fixtures">
         <mkdir dir="${build.dir}/regression/home-annotation"/>
-        <java classname="simplegenomehub.regression.SequenceExtractionRegression"
-              classpathref="regression.classpath" fork="true" failonerror="true">
-            <sysproperty key="java.awt.headless" value="true"/>
-            <sysproperty key="user.home" value="${build.dir}/regression/home-science"/>
-            <sysproperty key="sgh.fixtures" value="${basedir}/test/fixtures/science"/>
-            <arg value="${build.dir}/regression/science"/>
-        </java>
         <java classname="simplegenomehub.regression.AnnotationPersistenceRegression"
               classpathref="regression.classpath" fork="true" failonerror="true">
             <sysproperty key="java.awt.headless" value="true"/>

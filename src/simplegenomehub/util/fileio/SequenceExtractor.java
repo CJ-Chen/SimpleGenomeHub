@@ -381,7 +381,7 @@ public class SequenceExtractor {
                     List<FeatureInfo> cdsList = entry.getValue();
                     
                     // Sort CDS by start position
-                    sortCdsInTranscriptOrder(cdsList);
+                    cdsList.sort((a, b) -> Integer.compare(a.getStart(), b.getStart()));
                     
                     // Concatenate CDS sequences
                     StringBuilder cdsSequence = new StringBuilder();
@@ -428,7 +428,7 @@ public class SequenceExtractor {
                     List<FeatureInfo> cdsList = entry.getValue();
                     
                     // Sort and concatenate CDS
-                    sortCdsInTranscriptOrder(cdsList);
+                    cdsList.sort((a, b) -> Integer.compare(a.getStart(), b.getStart()));
                     StringBuilder cdsSequence = new StringBuilder();
                     for (FeatureInfo cds : cdsList) {
                         String sequence = extractSequence(genomeSeqs, cds);
@@ -498,6 +498,9 @@ public class SequenceExtractor {
                         continue;
                     }
 
+                    // Sort CDS by position to find the first one (ATG location)
+                    cdsList.sort((a, b) -> Integer.compare(a.getStart(), b.getStart()));
+
                     FeatureInfo firstCds = cdsList.get(0);
                     String chrSeq = genomeSeqs.get(firstCds.getSeqId());
                     if (chrSeq == null) {
@@ -512,15 +515,13 @@ public class SequenceExtractor {
 
                     if ("+".equals(firstCds.getStrand())) {
                         // Forward strand: ATG is at CDS start, promoter is BEFORE (upstream = lower coordinates)
-                        atgPosition = cdsList.stream().mapToInt(FeatureInfo::getStart).min().getAsInt();
+                        atgPosition = firstCds.getStart();
                         promoterEnd = atgPosition - 1;  // Exclusive of ATG
                         promoterStart = Math.max(1, promoterEnd - upstreamLength + 1);
                     } else {
                         // Reverse strand: ATG is at CDS end (in genomic sense), promoter is AFTER (higher coordinates)
                         // But biologically upstream - needs reverse complement
-                        // Promoter bounds are genomic extrema, independent of
-                        // the strand-specific ordering used to concatenate CDS.
-                        atgPosition = cdsList.stream().mapToInt(FeatureInfo::getEnd).max().getAsInt();
+                        atgPosition = cdsList.get(cdsList.size() - 1).getEnd();  // Last CDS end
                         promoterStart = atgPosition + 1;  // Exclusive of ATG
                         promoterEnd = Math.min(chrSeq.length(), promoterStart + upstreamLength - 1);
                     }
@@ -624,13 +625,6 @@ public class SequenceExtractor {
      */
     public static String extractFeatureSequence(Map<String, String> genomeSeqs, FeatureInfo feature) {
         return extractSequence(genomeSeqs, feature);
-    }
-
-    private static void sortCdsInTranscriptOrder(List<FeatureInfo> cds) {
-        cds.sort(Comparator.comparingInt(FeatureInfo::getStart));
-        // extractSequence already reverse-complements each negative-strand
-        // segment. Their concatenation must therefore proceed from high to low.
-        if (!cds.isEmpty() && "-".equals(cds.get(0).getStrand())) Collections.reverse(cds);
     }
     
     /**
@@ -856,7 +850,7 @@ public class SequenceExtractor {
                     List<FeatureInfo> cdsList = entry.getValue();
                     
                     // Sort and concatenate CDS
-                    sortCdsInTranscriptOrder(cdsList);
+                    cdsList.sort((a, b) -> Integer.compare(a.getStart(), b.getStart()));
                     StringBuilder cdsSequence = new StringBuilder();
                     for (FeatureInfo cds : cdsList) {
                         String sequence = extractSequence(genomeSeqs, cds);
@@ -927,7 +921,7 @@ public class SequenceExtractor {
                     List<FeatureInfo> cdsList = entry.getValue();
                     
                     // Sort and concatenate CDS
-                    sortCdsInTranscriptOrder(cdsList);
+                    cdsList.sort((a, b) -> Integer.compare(a.getStart(), b.getStart()));
                     StringBuilder cdsSequence = new StringBuilder();
                     for (FeatureInfo cds : cdsList) {
                         String sequence = extractSequence(genomeSeqs, cds);
