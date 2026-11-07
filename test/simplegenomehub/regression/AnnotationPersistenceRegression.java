@@ -313,22 +313,169 @@ public final class AnnotationPersistenceRegression {
             && "alpha".equals(preamble.getValueAt(0, 1)), "A valid header after ordinary preamble lines was not recognized");
     }
 
-    /** Uses only APIs present at cf8fd620, so compiled tests can run against baseline classes. */
+    /** An ordinary non-tab comment is a control, not evidence of schema corruption.
+     * Both upstream 42b117e and the fix must produce identical output with or without it.
+     */
+    private static void ordinaryCommentControl(Path root) throws Exception {
+        String header = "#Gene_ID\tPfam_ID\tTerm\tDescription\n";
+        String first = "g1\tPF0001\tAlpha\tDomain description\n";
+        String second = "g2\tPF0002\tBeta\tOther description\n";
+        Path plain = write(root, "control-no-comment.tsv", header + first + second);
+        Path commented = write(root, "control-with-comment.tsv", header + first
+            + "# ordinary comment between rows\n" + second);
+        GeneAnnotationData plainData = data();
+        GeneAnnotationData commentedData = data();
+        check(plainData.loadCustomAnnotations(plain.toFile(), AnnotationType.PFAM), "Comment control without comment did not load");
+        check(commentedData.loadCustomAnnotations(commented.toFile(), AnnotationType.PFAM), "Comment control with comment did not load");
+        check(Arrays.equals(plainData.getColumnHeaders(AnnotationType.PFAM), commentedData.getColumnHeaders(AnnotationType.PFAM))
+            && plainData.getAnnotationCounts().equals(commentedData.getAnnotationCounts()),
+            "An ordinary non-tab comment changed the parsed schema or counts");
+        Path plainSaved = root.resolve("control-no-comment-saved.tsv");
+        Path commentSaved = root.resolve("control-with-comment-saved.tsv");
+        check(plainData.saveToFile(plainSaved.toFile(), AnnotationType.PFAM)
+            && commentedData.saveToFile(commentSaved.toFile(), AnnotationType.PFAM), "Comment control could not save");
+        check(Arrays.equals(Files.readAllBytes(plainSaved), Files.readAllBytes(commentSaved)),
+            "An ordinary non-tab comment changed saved annotation values");
+        System.out.println("CONTROL: ordinary non-tab # comment leaves parsed/saved output unchanged");
+    }
+
+    /** Same data and header names; only the leading # differs. */
+    private static void namedSchemaRoundTrip(Path root, boolean baseline) throws Exception {
+        String[] headers = {"Gene_ID", "Pfam_ID", "Term", "Description", "Evidence", "Future"};
+        String[] values = {"g1", "PF0001", "Alpha", "Domain description", "IEA", "keep unknown"};
+        String header = String.join("\t", headers) + "\n";
+        String row = String.join("\t", values) + "\n";
+        Path bare = write(root, "schema-bare-header.tsv", header + row);
+        Path marked = write(root, "schema-comment-header.tsv", "#" + header + row);
+        GeneAnnotationData bareData = data();
+        GeneAnnotationData markedData = data();
+        check(bareData.loadCustomAnnotations(bare.toFile(), AnnotationType.PFAM), "Bare schema header did not load");
+        check(markedData.loadCustomAnnotations(marked.toFile(), AnnotationType.PFAM), "#Gene_ID schema header did not load");
+        check(Arrays.equals(headers, bareData.getColumnHeaders(AnnotationType.PFAM))
+            && Arrays.equals(values, bareData.getGeneAnnotations("g1", AnnotationType.PFAM).get(0).getColumnValues()),
+            "Bare-header control did not preserve the explicit schema and dynamic values");
+        Path bareSaved = root.resolve("schema-bare-saved.tsv");
+        Path markedSaved = root.resolve("schema-comment-saved.tsv");
+        check(bareData.saveToFile(bareSaved.toFile(), AnnotationType.PFAM)
+            && markedData.saveToFile(markedSaved.toFile(), AnnotationType.PFAM), "Schema fixture could not save");
+        if (baseline) {
+            check(!Arrays.equals(headers, markedData.getColumnHeaders(AnnotationType.PFAM))
+                && markedData.getGeneAnnotations("g1", AnnotationType.PFAM).get(0).getColumnCount() == 0,
+                "Baseline no longer skips the #Gene_ID schema while retaining the bare-header schema");
+            check(Files.readString(bareSaved).contains("keep unknown")
+                && !Files.readString(markedSaved).contains("keep unknown"),
+                "Baseline no longer drops the unknown column specifically after skipping the #Gene_ID header");
+            System.out.println("REPRODUCED baseline: #Gene_ID schema skipped and unknown column lost; identical bare header preserves it");
+        } else {
+            GeneAnnotation rowData = markedData.getGeneAnnotations("g1", AnnotationType.PFAM).get(0);
+            check(Arrays.equals(headers, markedData.getColumnHeaders(AnnotationType.PFAM))
+                && Arrays.equals(values, rowData.getColumnValues())
+                && "Alpha".equals(rowData.getTerm()) && "Domain description".equals(rowData.getDescription())
+                && "IEA".equals(rowData.getEvidence()), "#Gene_ID schema, named fields or dynamic column values changed");
+            check(Arrays.equals(Files.readAllBytes(bareSaved), Files.readAllBytes(markedSaved)),
+                "Leading # on an otherwise identical valid schema changed saved data");
+            GeneAnnotationData reopened = data();
+            check(reopened.loadCustomAnnotations(markedSaved.toFile(), AnnotationType.PFAM)
+                && Arrays.equals(headers, reopened.getColumnHeaders(AnnotationType.PFAM))
+                && Arrays.equals(values, reopened.getGeneAnnotations("g1", AnnotationType.PFAM).get(0).getColumnValues()),
+                "Named schema or unknown column did not survive save and reopen");
+        }
+    }
+
+    private static void tabbedPreambleColumns(Path root, boolean baseline) throws Exception {
+        String content = "#Gene_ID\tPfam_ID\tTerm\tDescription\ng1\tPF0001\tAlpha\tDomain description\n";
+        Path plain = write(root, "metadata-no-preamble.tsv", content);
+        Path preamble = write(root, "metadata-tabbed-preamble.tsv", "# generated\tby toolkit\n" + content);
+        simplegenomehub.model.AnnotationMetadata plainMetadata = simplegenomehub.model.AnnotationMetadata.analyzeFile(plain.toFile(), AnnotationType.PFAM);
+        simplegenomehub.model.AnnotationMetadata metadata = simplegenomehub.model.AnnotationMetadata.analyzeFile(preamble.toFile(), AnnotationType.PFAM);
+        check(Arrays.equals(plainMetadata.getColumnHeaders(), new String[]{"Gene_ID", "Pfam_ID", "Term", "Description"}),
+            "Metadata control without preamble did not recognize the real header");
+        simplegenomehub.gui.MetadataDrivenTableModel table = new simplegenomehub.gui.MetadataDrivenTableModel(metadata, AnnotationType.PFAM, preamble.toFile());
+        table.loadData();
+        check(metadata.getDataLines() == 1 && table.getRowCount() == 1, "Tabbed preamble changed data-row count");
+        if (baseline) {
+            check(Arrays.equals(metadata.getColumnHeaders(), new String[]{"generated", "by toolkit"})
+                && table.getColumnCount() == 2, "Baseline no longer misidentifies the tabbed comment as metadata headers");
+            System.out.println("REPRODUCED baseline: tabbed preamble replaces metadata headers and hides two of four table columns");
+        } else {
+            check(Arrays.equals(plainMetadata.getColumnHeaders(), metadata.getColumnHeaders()) && table.getColumnCount() == 4
+                && "Alpha".equals(table.getValueAt(0, 2)) && "Domain description".equals(table.getValueAt(0, 3)),
+                "Tabbed preamble replaced metadata headers or hid real annotation columns");
+        }
+    }
+
+    private static void customRowsAndFiltering(Path root, boolean baseline) throws Exception {
+        Path source = write(root, "custom-three-rows.tsv", "#Gene_ID\tDescription\n"
+            + "geneA\talpha\ngeneA\tbeta\ngeneB\tdelta\n");
+        simplegenomehub.model.AnnotationMetadata metadata = simplegenomehub.model.AnnotationMetadata.analyzeFile(source.toFile(), AnnotationType.CUSTOM);
+        check(metadata.getDataLines() == 3, "CUSTOM fixture metadata did not count all three annotations");
+        simplegenomehub.gui.MetadataDrivenTableModel table = new simplegenomehub.gui.MetadataDrivenTableModel(metadata, AnnotationType.CUSTOM, source.toFile());
+        table.loadData();
+        if (baseline) {
+            check(table.getRowCount() == 2 && "geneA".equals(table.getValueAt(0, 0)) && "beta".equals(table.getValueAt(0, 1)),
+                "Baseline no longer skips the first geneA/alpha data row");
+            System.out.println("REPRODUCED baseline: metadata counts three CUSTOM rows but table omits the first geneA/alpha row");
+        } else {
+            check(table.getRowCount() == 3 && "geneA".equals(table.getValueAt(0, 0)) && "alpha".equals(table.getValueAt(0, 1)),
+                "CUSTOM table lost its first geneA/alpha annotation");
+            table.filterByGenes(java.util.Collections.singleton("geneA"));
+            check(table.getRowCount() == 2 && "alpha".equals(table.getValueAt(0, 1)) && "beta".equals(table.getValueAt(1, 1)),
+                "CUSTOM geneA filter did not retain both annotation rows");
+        }
+        // Use IDs without 'gene' to isolate filtering from first-row header heuristics.
+        Path filterSource = write(root, "custom-filter-control.tsv", "#Gene_ID\tDescription\n"
+            + "g1\talpha\ng1\tbeta\ng2\tdelta\n");
+        simplegenomehub.model.AnnotationMetadata filterMetadata = simplegenomehub.model.AnnotationMetadata.analyzeFile(filterSource.toFile(), AnnotationType.CUSTOM);
+        simplegenomehub.gui.MetadataDrivenTableModel filtered = new simplegenomehub.gui.MetadataDrivenTableModel(filterMetadata, AnnotationType.CUSTOM, filterSource.toFile());
+        filtered.loadData();
+        check(filtered.getRowCount() == 3, "Filter control was affected by an unrelated row-skipping problem");
+        filtered.filterByGenes(java.util.Collections.singleton("g1"));
+        if (baseline) {
+            check(filtered.getRowCount() == 1 && "alpha".equals(filtered.getValueAt(0, 1)),
+                "Baseline no longer collapses multiple annotations during exact filtering");
+            System.out.println("REPRODUCED baseline: exact g1 filtering keeps one of two annotations even when all rows load");
+        } else {
+            check(filtered.getRowCount() == 2 && "alpha".equals(filtered.getValueAt(0, 1)) && "beta".equals(filtered.getValueAt(1, 1)),
+                "Exact filtering collapsed multiple annotations for one gene");
+        }
+    }
+
+    private static void headerlessModelRows(Path root, boolean baseline) throws Exception {
+        Path source = write(root, "model-first-gene.tsv", "geneA\tPF0001\tfirst term\ngeneB\tPF0002\tsecond term\n");
+        Path control = write(root, "model-first-control.tsv", "g1\tPF0001\tfirst term\ng2\tPF0002\tsecond term\n");
+        GeneAnnotationData actual = data();
+        GeneAnnotationData controlData = data();
+        check(actual.loadCustomAnnotations(source.toFile(), AnnotationType.PFAM)
+            && controlData.loadCustomAnnotations(control.toFile(), AnnotationType.PFAM), "Headerless model fixtures did not load");
+        check(controlData.getAnnotatedGenes(AnnotationType.PFAM).containsAll(Arrays.asList("g1", "g2")),
+            "Headerless control without 'gene' in its IDs did not retain both rows");
+        if (baseline) {
+            check(!actual.getAnnotatedGenes(AnnotationType.PFAM).contains("geneA")
+                && actual.getAnnotatedGenes(AnnotationType.PFAM).contains("geneB"), "Baseline no longer loses the first geneA row in model reload");
+            System.out.println("REPRODUCED baseline: model reload mistakes the first headerless geneA row for a header");
+        } else {
+            check(actual.getAnnotatedGenes(AnnotationType.PFAM).containsAll(Arrays.asList("geneA", "geneB"))
+                && "PF0001".equals(actual.getGeneAnnotations("geneA", AnnotationType.PFAM).get(0).getAnnotationId()),
+                "Headerless model reload discarded the first geneA annotation");
+        }
+    }
+
+    /** Uses only upstream 42b117e APIs, so the same bytecode can test either version.
+     * These exercise model reload and metadata/table entry points. The fixed GUI
+     * loader delegates to the same parser; no claim is made that its old private
+     * loader had the model's first-row heuristic.
+     */
+    private static void targetedParsingChecks(Path root, boolean baseline) throws Exception {
+        ordinaryCommentControl(root);
+        namedSchemaRoundTrip(root, baseline);
+        tabbedPreambleColumns(root, baseline);
+        customRowsAndFiltering(root, baseline);
+        headerlessModelRows(root, baseline);
+    }
+
+    /** Reproduce isolated upstream defects, rather than inferring causes from field counts. */
     private static void baselineDefects(Path root) throws Exception {
-        Path first = write(root, "baseline-first.tsv", "geneA\tPF0001\tfirst term\ngeneB\tPF0002\tsecond term\n");
-        GeneAnnotationData initial = data();
-        check(initial.loadCustomAnnotations(first.toFile(), AnnotationType.PFAM), "Baseline fixture could not load");
-        check(!initial.getAnnotatedGenes(AnnotationType.PFAM).contains("geneA"), "Baseline no longer loses first geneA data row");
-        System.out.println("REPRODUCED baseline: first geneA data row mistaken for a header");
-        Path comment = write(root, "baseline-comment.tsv", "#Gene_ID\tPfam_ID\tTerm\tDescription\n"
-            + "g1\tPF0001\tAlpha\tDomain description\n# ordinary comment between rows\ng2\tPF0002\tBeta\tOther description\n");
-        GeneAnnotationData comments = data();
-        check(comments.loadCustomAnnotations(comment.toFile(), AnnotationType.PFAM), "Baseline comment fixture could not load");
-        check(comments.getColumnHeaders(AnnotationType.PFAM).length != 4, "Baseline no longer replaces schema with ordinary comments");
-        Path commentSave = root.resolve("baseline-comment-saved.tsv");
-        check(comments.saveToFile(commentSave.toFile(), AnnotationType.PFAM), "Baseline comment save failed unexpectedly");
-        check(!Files.readString(commentSave).contains("\tAlpha\t"), "Baseline no longer loses annotation values after comment schema replacement");
-        System.out.println("REPRODUCED baseline: ordinary # comment replaces schema and loses annotation content on save");
+        targetedParsingChecks(root, true);
         // Exercise dynamic model columns directly without depending on baseline importer heuristics.
         GeneAnnotationData edited = data();
         String[] editHeaders = {"Gene_ID", "Pfam_ID", "Term", "Description", "Future"};
@@ -346,10 +493,17 @@ public final class AnnotationPersistenceRegression {
     }
 
     public static void main(String[] args) throws Exception {
-        Path temporary = args.length > 0 && !args[0].equals("--baseline")
-            ? Files.createDirectories(Path.of(args[0]).toAbsolutePath()) : Files.createTempDirectory("sgh-annotation-regression-");
+        String outputDirectory = null;
+        for (String arg : args) if (!arg.startsWith("--")) { outputDirectory = arg; break; }
+        Path temporary = outputDirectory != null
+            ? Files.createDirectories(Path.of(outputDirectory).toAbsolutePath()) : Files.createTempDirectory("sgh-annotation-regression-");
         isolate(temporary);
         if (java.util.Arrays.asList(args).contains("--baseline")) { baselineDefects(temporary); return; }
+        targetedParsingChecks(temporary, false);
+        if (java.util.Arrays.asList(args).contains("--annotation-contract")) {
+            System.out.println("PASS annotation contracts: ordinary-comment control, named schema, tabbed preamble, first rows and multi-annotation filtering");
+            return;
+        }
         String input = "# generated by pfam importer\n#Gene_ID\tPfam_ID\tTerm\tDescription\tEvidence\tFuture_Field\tBlank\n"
             + "g1\tPF0001\tAlpha\tDomain description\tIEA\tuntouched ; value 中文\t\n"
             + "# ordinary comment between rows\n#Gene_ID\tPfam_ID\tTerm\tDescription\tEvidence\tFuture_Field\tBlank\n"
@@ -359,7 +513,7 @@ public final class AnnotationPersistenceRegression {
         GeneAnnotationData pfam = data();
         check(pfam.loadCustomAnnotations(source.toFile(), AnnotationType.PFAM), "PFAM import");
         check(pfam.getAnnotationCounts().get(AnnotationType.PFAM) == 2, "Comment or repeated header became data");
-        check(pfam.getColumnHeaders(AnnotationType.PFAM).length == 7, "Ordinary comment replaced schema");
+        check(pfam.getColumnHeaders(AnnotationType.PFAM).length == 7, "Explicit seven-column schema was not retained");
         check("untouched ; value 中文".equals(pfam.getGeneAnnotations("g1", AnnotationType.PFAM).get(0).getColumnValue(5)),
             "Unknown annotation column changed");
         Path saved = temporary.resolve("pfam-saved.tsv");

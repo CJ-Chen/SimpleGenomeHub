@@ -312,7 +312,7 @@ public class SpeciesInfo {
     /**
      * Add expression experiment to this species
      */
-    public boolean addExpressionExperiment(ExpressionExperiment experiment) {
+    public synchronized boolean addExpressionExperiment(ExpressionExperiment experiment) {
         if (experiment == null) {
             return false;
         }
@@ -334,7 +334,7 @@ public class SpeciesInfo {
     /**
      * Remove expression experiment
      */
-    public boolean removeExpressionExperiment(String experimentId) {
+    public synchronized boolean removeExpressionExperiment(String experimentId) {
         ExpressionExperiment toRemove = null;
         for (ExpressionExperiment experiment : expressionExperiments) {
             if (experiment.getExperimentId().equals(experimentId)) {
@@ -354,7 +354,7 @@ public class SpeciesInfo {
     /**
      * Remove expression experiment by object
      */
-    public boolean removeExpressionExperiment(ExpressionExperiment experiment) {
+    public synchronized boolean removeExpressionExperiment(ExpressionExperiment experiment) {
         if (experiment != null && expressionExperiments.remove(experiment)) {
             logger.info("Removed expression experiment: " + experiment.getExperimentId() + " from species: " + getSpeciesDirectoryName());
             return true;
@@ -365,7 +365,7 @@ public class SpeciesInfo {
     /**
      * Get expression experiment by ID
      */
-    public ExpressionExperiment getExpressionExperiment(String experimentId) {
+    public synchronized ExpressionExperiment getExpressionExperiment(String experimentId) {
         for (ExpressionExperiment experiment : expressionExperiments) {
             if (experiment.getExperimentId().equals(experimentId)) {
                 return experiment;
@@ -377,14 +377,19 @@ public class SpeciesInfo {
     /**
      * Get all expression experiments
      */
-    public List<ExpressionExperiment> getExpressionExperiments() {
+    public synchronized List<ExpressionExperiment> getExpressionExperiments() {
         return new ArrayList<>(expressionExperiments);
+    }
+
+    /** Publish a complete disk snapshot, including deletion and replacement of old objects. */
+    synchronized void replaceExpressionExperiments(List<ExpressionExperiment> experiments) {
+        expressionExperiments = new ArrayList<>(experiments);
     }
     
     /**
      * Check if species has expression data
      */
-    public boolean hasExpressionData() {
+    public synchronized boolean hasExpressionData() {
         return !expressionExperiments.isEmpty() || 
                (expressionDir != null && expressionDir.exists() && 
                 expressionDir.listFiles() != null && expressionDir.listFiles().length > 0);
@@ -393,7 +398,7 @@ public class SpeciesInfo {
     /**
      * Get all expression matrices across all experiments
      */
-    public List<ExpressionMatrix> getAllExpressionMatrices() {
+    public synchronized List<ExpressionMatrix> getAllExpressionMatrices() {
         List<ExpressionMatrix> allMatrices = new ArrayList<>();
         for (ExpressionExperiment experiment : expressionExperiments) {
             allMatrices.addAll(experiment.getMatrices());

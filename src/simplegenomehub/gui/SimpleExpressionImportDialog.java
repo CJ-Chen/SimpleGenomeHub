@@ -555,6 +555,7 @@ public class SimpleExpressionImportDialog extends JDialog {
                 }
                 currentExperiment.setMetadataFile(metadataFile);
                 targetSpecies.addExpressionExperiment(currentExperiment);
+                ExpressionExperimentLoader.invalidate(targetSpecies);
                 
                 setProgress(100);
                 publish("Import completed successfully!");

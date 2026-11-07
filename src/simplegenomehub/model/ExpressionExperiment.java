@@ -320,8 +320,24 @@ public class ExpressionExperiment {
     public static ExpressionExperiment loadMetadata(File file) {
         if (file == null || !simplegenomehub.util.fileio.FileSetTransaction.isPublished(file.toPath())) return null;
         try {
+            return loadMetadataChecked(file);
+        } catch (Exception failure) {
+            logger.log(Level.SEVERE, "Failed to load experiment metadata from " + file, failure);
+            return null;
+        }
+    }
+
+    /** Shared loaders need the original failure instead of an indistinguishable null. */
+    public static ExpressionExperiment loadMetadataChecked(File file) throws IOException {
+        if (file == null) throw new IOException("Expression metadata file is required");
+        if (!simplegenomehub.util.fileio.FileSetTransaction.isPublished(file.toPath()))
+            throw new IOException("Expression metadata publication is unfinished: " + file);
+        try {
             JsonObject json = JsonMetadataSupport.read(file);
-            ExpressionExperiment experiment = new ExpressionExperiment(JsonMetadataSupport.text(json, "experiment_id"), JsonMetadataSupport.text(json, "title"));
+            String id = JsonMetadataSupport.text(json, "experiment_id");
+            if (id.trim().isEmpty() || id.contains("/") || id.contains("\\") || id.equals(".") || id.equals(".."))
+                throw new IOException("Missing or invalid experiment_id in " + file);
+            ExpressionExperiment experiment = new ExpressionExperiment(id, JsonMetadataSupport.text(json, "title"));
             experiment.originalMetadata = json;
             experiment.metadataFile = file;
             experiment.description = JsonMetadataSupport.text(json, "description");
@@ -361,9 +377,8 @@ public class ExpressionExperiment {
                 experiment.sampleGroups.put(sample.sampleId, JsonMetadataSupport.text(entry, "group"));
             }
             return experiment;
-        } catch (Exception failure) {
-            logger.log(Level.SEVERE, "Failed to load experiment metadata from " + file, failure);
-            return null;
+        } catch (RuntimeException failure) {
+            throw new IOException("Invalid expression metadata fields: " + file + ": " + failure.getMessage(), failure);
         }
     }
 

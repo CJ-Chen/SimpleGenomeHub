@@ -2,6 +2,7 @@ package simplegenomehub.gui;
 
 import simplegenomehub.model.ExpressionExperiment;
 import simplegenomehub.model.ExpressionMatrix;
+import simplegenomehub.model.ExpressionExperimentLoader;
 import simplegenomehub.model.SpeciesInfo;
 
 import java.io.File;
@@ -26,37 +27,7 @@ final class ExpressionExperimentDisplaySupport {
     }
 
     static List<ExpressionExperiment> loadExpressionExperiments(SpeciesInfo targetSpecies) {
-        List<ExpressionExperiment> experiments = new ArrayList<>();
-        if (targetSpecies == null) {
-            return experiments;
-        }
-
-        File expressionDir = targetSpecies.getExpressionDir();
-        if (expressionDir == null || !expressionDir.exists()) {
-            return experiments;
-        }
-
-        File[] metadataFiles = expressionDir.listFiles((dir, name) -> name.endsWith(".metadata.json") && simplegenomehub.util.fileio.FileSetTransaction.isPublished(new File(dir, name).toPath()));
-        if (metadataFiles == null) {
-            return experiments;
-        }
-
-        Arrays.sort(metadataFiles, (left, right) ->
-            left.getName().compareToIgnoreCase(right.getName()));
-
-        for (File metadataFile : metadataFiles) {
-            try {
-                ExpressionExperiment experiment = ExpressionExperiment.loadMetadata(metadataFile);
-                if (experiment != null) {
-                    loadExperimentMatrices(experiment, expressionDir);
-                    experiments.add(experiment);
-                }
-            } catch (Exception e) {
-                logger.warning("Failed to load experiment from " + metadataFile.getName() + ": " + e.getMessage());
-            }
-        }
-
-        return experiments;
+        return new ArrayList<>(ExpressionExperimentLoader.load(targetSpecies).getExperiments());
     }
 
     static String buildExperimentDetailsText(ExpressionExperiment experiment) {
@@ -142,35 +113,6 @@ final class ExpressionExperimentDisplaySupport {
         }
 
         return null;
-    }
-
-    static void loadExperimentMatrices(ExpressionExperiment experiment, File expressionDir) {
-        String experimentId = experiment.getExperimentId();
-        File matrixFile = new File(expressionDir, experimentId + ".matrix.tsv");
-
-        if (!matrixFile.exists() || !simplegenomehub.util.fileio.FileSetTransaction.isPublished(matrixFile.toPath())) {
-            logger.warning("Matrix file not found for experiment: " + experimentId);
-            return;
-        }
-
-        try {
-            ExpressionMatrix.DataType dataType = experiment.getStoredDataType();
-            if (dataType == null) {
-                logger.warning("Missing data_type in metadata for experiment " + experimentId
-                    + "; matrix was not loaded to avoid assuming TPM.");
-                return;
-            }
-            String matrixId = experimentId + "_matrix";
-            ExpressionMatrix matrix = new ExpressionMatrix(matrixId, experiment.getTitle(), dataType);
-
-            if (matrix.loadFromFile(matrixFile)) {
-                experiment.addMatrix(matrix);
-            } else {
-                logger.warning("Failed to load matrix data from: " + matrixFile.getName());
-            }
-        } catch (Exception e) {
-            logger.warning("Error loading matrix for experiment " + experimentId + ": " + e.getMessage());
-        }
     }
 
     private static ExpressionMatrix findMatrixForFile(ExpressionExperiment experiment, File selectedMatrixFile) {

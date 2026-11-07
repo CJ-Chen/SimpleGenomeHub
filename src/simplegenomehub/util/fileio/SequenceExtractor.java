@@ -380,7 +380,7 @@ public class SequenceExtractor {
                     String transcriptId = entry.getKey();
                     List<FeatureInfo> cdsList = entry.getValue();
                     
-                    // Sort CDS by start position
+                    // Assemble already strand-oriented segments in transcript order.
                     sortCdsInTranscriptOrder(cdsList);
                     
                     // Concatenate CDS sequences
@@ -629,8 +629,10 @@ public class SequenceExtractor {
     private static void sortCdsInTranscriptOrder(List<FeatureInfo> cds) {
         cds.sort(Comparator.comparingInt(FeatureInfo::getStart));
         // extractSequence already reverse-complements each negative-strand
-        // segment. Their concatenation must therefore proceed from high to low.
-        if (!cds.isEmpty() && "-".equals(cds.get(0).getStrand())) Collections.reverse(cds);
+        // segment, so concatenate those segments from high to low coordinates.
+        if (!cds.isEmpty() && "-".equals(cds.get(0).getStrand())) {
+            Collections.reverse(cds);
+        }
     }
     
     /**
