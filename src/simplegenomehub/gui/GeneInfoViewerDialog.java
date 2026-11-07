@@ -207,7 +207,7 @@ public class GeneInfoViewerDialog extends JDialog {
         gbc.insets = new Insets(4, 4, 4, 4);
 
         gbc.gridx = 0; gbc.gridy = 0;
-        gbc.gridwidth = 3;
+        gbc.gridwidth = 4;
         gbc.weightx = 1.0;
         gbc.fill = GridBagConstraints.HORIZONTAL;
         speciesCombo.setPreferredSize(SimpleGenomeHubStyle.SIZE_COMBO_280_X_30);
@@ -222,16 +222,13 @@ public class GeneInfoViewerDialog extends JDialog {
         gbc.gridx = 1;
         gbc.weightx = 0.0;
         gbc.fill = GridBagConstraints.NONE;
-        inputPanel.add(clearButton, gbc);
+        inputPanel.add(searchButton, gbc);
 
         gbc.gridx = 2;
-        inputPanel.add(exampleButton, gbc);
+        inputPanel.add(clearButton, gbc);
 
-        gbc.gridx = 0; gbc.gridy = 2;
-        gbc.gridwidth = 3;
-        gbc.weightx = 1.0;
-        gbc.fill = GridBagConstraints.HORIZONTAL;
-        inputPanel.add(searchButton, gbc);
+        gbc.gridx = 3;
+        inputPanel.add(exampleButton, gbc);
 
         // Status panel
         JPanel statusPanel = new JPanel(new FlowLayout(FlowLayout.LEFT));
