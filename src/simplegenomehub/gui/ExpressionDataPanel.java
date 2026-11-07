@@ -20,6 +20,7 @@ import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.logging.Level;
 import java.util.logging.Logger;
 
 /**
@@ -95,8 +96,7 @@ public class ExpressionDataPanel extends JDialog {
         loadResult = loaded;
         experiments = new ArrayList<>(loaded.getExperiments());
         tableModel.fireTableDataChanged();
-        ((TitledBorder) tablePanel.getBorder()).setTitle("Expression Experiments (" + experiments.size() + ")");
-        tablePanel.repaint();
+        SimpleGenomeHubUi.setTitledBorderTitle(tablePanel, "Expression Experiments (" + experiments.size() + ")");
         refreshDetailsArea();
         updateButtons();
         logger.info(loaded.getSummary());
@@ -453,8 +453,11 @@ public class ExpressionDataPanel extends JDialog {
         updateButtons();
         simplegenomehub.runtime.HubWorker<ExpressionExperimentLoader.LoadResult, Void> worker =
             new simplegenomehub.runtime.HubWorker<ExpressionExperimentLoader.LoadResult, Void>() {
+            private volatile boolean dataTypeSaved;
+
             @Override protected ExpressionExperimentLoader.LoadResult doInBackground() throws Exception {
                 experiment.saveExplicitDataType((ExpressionMatrix.DataType) selected);
+                dataTypeSaved = true;
                 ExpressionExperimentLoader.invalidate(targetSpecies);
                 return ExpressionExperimentLoader.load(targetSpecies);
             }
@@ -464,8 +467,18 @@ public class ExpressionDataPanel extends JDialog {
                     applyLoadedExperiments(get());
                 } catch (Exception failure) {
                     Throwable cause = failure.getCause() == null ? failure : failure.getCause();
-                    JOptionPane.showMessageDialog(ExpressionDataPanel.this, cause.getMessage(),
-                        "Unable to Save Data Type", JOptionPane.ERROR_MESSAGE);
+                    logger.log(Level.WARNING, dataTypeSaved
+                        ? "Expression data type saved, but refreshing experiments failed"
+                        : "Unable to save expression data type", failure);
+                    if (dataTypeSaved) {
+                        JOptionPane.showMessageDialog(ExpressionDataPanel.this,
+                            "The data type was saved, but the experiment list could not be refreshed.\n"
+                                + "Use Refresh or reopen this window.\n\n" + cause.getMessage(),
+                            "Data Type Saved; Refresh Failed", JOptionPane.WARNING_MESSAGE);
+                    } else {
+                        JOptionPane.showMessageDialog(ExpressionDataPanel.this, cause.getMessage(),
+                            "Unable to Save Data Type", JOptionPane.ERROR_MESSAGE);
+                    }
                 } finally { loading = false; updateButtons(); }
             }
         };
