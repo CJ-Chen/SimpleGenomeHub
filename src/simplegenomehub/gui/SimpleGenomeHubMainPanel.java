@@ -33,6 +33,7 @@ public class SimpleGenomeHubMainPanel extends JPanel implements SpeciesManager.S
     private SpeciesTreePanel speciesTreePanel;
     private SpeciesInfoPanel speciesInfoPanel;
     private JLabel statusLabel;
+    private HubCitationPanel citationPanel;
         
     /**
      * Constructor
@@ -100,6 +101,7 @@ public class SimpleGenomeHubMainPanel extends JPanel implements SpeciesManager.S
         speciesTreePanel = new SpeciesTreePanel(speciesManager);
         speciesInfoPanel = new SpeciesInfoPanel(speciesManager);
         statusLabel = new JLabel("Ready");
+        citationPanel = new HubCitationPanel();
     }
     
     /**
@@ -125,8 +127,11 @@ public class SimpleGenomeHubMainPanel extends JPanel implements SpeciesManager.S
 
         add(contentPanel, BorderLayout.CENTER);
 
-        JPanel statusPanel = createStatusPanel();
-        add(statusPanel, BorderLayout.SOUTH);
+        JPanel footer = new JPanel(new BorderLayout());
+        footer.setOpaque(false);
+        footer.add(citationPanel, BorderLayout.CENTER);
+        footer.add(createStatusPanel(), BorderLayout.SOUTH);
+        add(footer, BorderLayout.SOUTH);
     }
     
     /**
@@ -205,7 +210,7 @@ public class SimpleGenomeHubMainPanel extends JPanel implements SpeciesManager.S
      * Create status panel
      */
     private JPanel createStatusPanel() {
-        JPanel statusPanel = new JPanel(new BorderLayout());
+        JPanel statusPanel = new JPanel(new BorderLayout(10, 0));
         statusPanel.setBorder(BorderFactory.createEtchedBorder());
         statusPanel.setBackground(new Color(236, 243, 252));
         statusPanel.add(statusLabel, BorderLayout.WEST);
@@ -214,8 +219,9 @@ public class SimpleGenomeHubMainPanel extends JPanel implements SpeciesManager.S
             config.getDataRootDir().getAbsolutePath() : "Not configured";
         JLabel dataDirLabel = new JLabel("Data Directory: " + dataDir);
         dataDirLabel.setFont(SimpleGenomeHubStyle.plain(dataDirLabel.getFont(), 11f));
+        dataDirLabel.setToolTipText(dataDir);
 
-        JPanel rightPanel = new JPanel(new FlowLayout(FlowLayout.RIGHT, 10, 0));
+        JPanel rightPanel = new JPanel(new BorderLayout(10, 0));
         rightPanel.setOpaque(false);
         JButton logButton = new JButton("Runtime Log");
         logButton.setToolTipText("View the current Hub session log");
@@ -223,10 +229,10 @@ public class SimpleGenomeHubMainPanel extends JPanel implements SpeciesManager.S
             RuntimeLogDialog dialog = new RuntimeLogDialog(SwingUtilities.getWindowAncestor(this), session);
             dialog.setVisible(true);
         });
-        rightPanel.add(logButton);
-        rightPanel.add(dataDirLabel);
-        rightPanel.add(SimpleGenomeHubFontManager.createScaleControl());
-        statusPanel.add(rightPanel, BorderLayout.EAST);
+        rightPanel.add(logButton, BorderLayout.WEST);
+        rightPanel.add(dataDirLabel, BorderLayout.CENTER);
+        rightPanel.add(SimpleGenomeHubFontManager.createScaleControl(), BorderLayout.EAST);
+        statusPanel.add(rightPanel, BorderLayout.CENTER);
         
         return statusPanel;
     }
