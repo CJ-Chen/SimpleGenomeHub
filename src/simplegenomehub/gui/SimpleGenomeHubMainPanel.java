@@ -34,6 +34,7 @@ public class SimpleGenomeHubMainPanel extends JPanel implements SpeciesManager.S
     private SpeciesInfoPanel speciesInfoPanel;
     private JLabel statusLabel;
     private HubCitationPanel citationPanel;
+    private HubCitationNotice citationNotice;
         
     /**
      * Constructor
@@ -60,7 +61,10 @@ public class SimpleGenomeHubMainPanel extends JPanel implements SpeciesManager.S
         } catch (RuntimeException | Error failure) {
             session.addCleanup(() -> {
                 if (speciesManager != null) speciesManager.shutdown();
-                SwingUtilities.invokeLater(() -> SimpleGenomeHubFontManager.unregisterRoot(this));
+                SwingUtilities.invokeLater(() -> {
+                    if (citationNotice != null) citationNotice.dispose();
+                    SimpleGenomeHubFontManager.unregisterRoot(this);
+                });
             });
             session.closeAsync();
             throw failure;
@@ -69,6 +73,7 @@ public class SimpleGenomeHubMainPanel extends JPanel implements SpeciesManager.S
             speciesManager.removeListener(this);
             speciesManager.shutdown();
             Runnable disposeUi = () -> {
+                citationNotice.dispose();
                 for (Window window : session.getOwnedWindows()) window.dispose();
                 SimpleGenomeHubFontManager.unregisterRoot(this);
             };
@@ -102,6 +107,7 @@ public class SimpleGenomeHubMainPanel extends JPanel implements SpeciesManager.S
         speciesInfoPanel = new SpeciesInfoPanel(speciesManager);
         statusLabel = new JLabel("Ready");
         citationPanel = new HubCitationPanel();
+        citationNotice = new HubCitationNotice(session::isActive, citationPanel::openPaper);
     }
     
     /**
@@ -111,7 +117,9 @@ public class SimpleGenomeHubMainPanel extends JPanel implements SpeciesManager.S
         setLayout(new BorderLayout());
         setBackground(Color.WHITE);
         
-        add(createTitleBannerPanel(), BorderLayout.NORTH);
+        JPanel page = new JPanel(new BorderLayout());
+        page.setBackground(Color.WHITE);
+        page.add(createTitleBannerPanel(), BorderLayout.NORTH);
 
         JSplitPane mainSplitPane = new JSplitPane(JSplitPane.HORIZONTAL_SPLIT);
         mainSplitPane.setDividerLocation(450);
@@ -125,13 +133,15 @@ public class SimpleGenomeHubMainPanel extends JPanel implements SpeciesManager.S
         contentPanel.setBorder(SimpleGenomeHubUi.createInnerPadding(14, 14, 12, 14));
         contentPanel.add(mainSplitPane, BorderLayout.CENTER);
 
-        add(contentPanel, BorderLayout.CENTER);
+        page.add(contentPanel, BorderLayout.CENTER);
 
         JPanel footer = new JPanel(new BorderLayout());
         footer.setOpaque(false);
         footer.add(citationPanel, BorderLayout.CENTER);
         footer.add(createStatusPanel(), BorderLayout.SOUTH);
-        add(footer, BorderLayout.SOUTH);
+        page.add(footer, BorderLayout.SOUTH);
+        citationNotice.setContent(page);
+        add(citationNotice, BorderLayout.CENTER);
     }
     
     /**
@@ -405,6 +415,7 @@ public class SimpleGenomeHubMainPanel extends JPanel implements SpeciesManager.S
                 return java.util.concurrent.CompletableFuture.completedFuture(Boolean.FALSE);
         }
         setStatus("Closing - waiting for Hub tasks and processes...");
+        citationNotice.dispose();
         disableTree(this);
         for (Window window : session.getOwnedWindows()) disableTree(window);
         return session.closeAsync();

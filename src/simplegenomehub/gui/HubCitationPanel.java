@@ -81,7 +81,7 @@ final class HubCitationPanel extends JPanel {
         Desktop.getDesktop().browse(uri);
     }
 
-    private void openPaper() {
+    void openPaper() {
         HubSession session = HubSession.forComponent(this);
         if (opening || (session != null && !session.isActive())) return;
         opening = true;
